@@ -1,40 +1,36 @@
 // src/routes/order.routes.js
-import { Router }            from 'express';
-import prisma                from '../utils/prisma.js';
-import { authMiddleware }    from '../middlewares/auth.js';
-import { notifyAgent }       from '../utils/teleg.js';
+import { Router }         from 'express';
+import prisma             from '../utils/prisma.js';
+import { authMiddleware } from '../middlewares/auth.js';
+import { notifyAgent }    from '../utils/teleg.js';
 
 const router = Router();
-
-// Все эндпоинты защищены JWT
 router.use(authMiddleware);
 
 /**
  * POST /orders
- * Оформление нового заказа
- * body: { storeId: number, items: Array<{ productId: number, qty: number }> }
+ * Оформление нового заказа.
+ * body: { storeId: number, items: Array<{ productId:number, qty:number }> }
  */
 router.post('/', async (req, res, next) => {
   try {
     const { storeId, items } = req.body;
-
-    // Валидация
     if (!storeId || !Array.isArray(items) || items.length === 0) {
       return res
         .status(400)
         .json({ error: 'storeId и непустой массив items обязательны' });
     }
 
-    // Получаем базовые цены товаров
+    // Получаем текущие базовые цены
     const products = await prisma.product.findMany({
-      where: { id: { in: items.map(i => i.productId) } },
-      select: { id: true, basePrice: true },
+      where:   { id: { in: items.map(i => i.productId) } },
+      select:  { id: true, basePrice: true }
     });
 
-    // Считаем общую сумму
+    // Считаем сумму
     const total = items.reduce((sum, { productId, qty }) => {
-      const prod = products.find(p => p.id === productId);
-      return sum + (prod?.basePrice ?? 0) * qty;
+      const p = products.find(x => x.id === productId);
+      return sum + (p?.basePrice || 0) * qty;
     }, 0);
 
     // Создаём заказ вместе с позициями
@@ -45,33 +41,50 @@ router.post('/', async (req, res, next) => {
         total,
         items: {
           create: items.map(({ productId, qty }) => {
-            const prod = products.find(p => p.id === productId);
+            const p = products.find(x => x.id === productId);
             return {
               productId,
               quantity: qty,
-              price:     prod?.basePrice ?? 0,
+              price:     p?.basePrice || 0
             };
-          }),
-        },
+          })
+        }
       },
       include: {
-        store: {
-          include: {
-            user: {
-              include: {
-                agent: true,    // берём телеграм-ID агента
-              },
-            },
-          },
+        user: {
+          select: { login: true, fullName: true }
         },
-      },
+        store: {
+          select: {
+            title: true,
+            user: {
+              select: {
+                agent: {
+                  select: { login: true, fullName: true, phone: true, telegramId: true }
+                },
+                fullName: true
+              }
+            }
+          }
+        },
+        items: {
+          include: {
+            product: {
+              select: { name: true, volume: true }
+            }
+          }
+        }
+      }
     });
-    console.log('🛒 New order created:', JSON.stringify(order, null, 2));
-    // Отправляем уведомление агенту, если у него есть telegramId
-    const tgId = order.store.user.agent?.telegramId;
-    if (tgId) {
+
+    // Логируем
+    console.log('🆕 New order created:', order);
+
+    // Уведомляем агента
+    const tg = order.store.user.agent?.telegramId;
+    if (tg) {
       notifyAgent(
-        tgId,
+        tg,
         `🆕 Новый заказ #${order.id}\n` +
         `Магазин: ${order.store.title}\n` +
         `Сумма: ${total.toFixed(2)} ₽`
@@ -80,78 +93,120 @@ router.post('/', async (req, res, next) => {
 
     return res.status(201).json(order);
   } catch (err) {
-    return next(err);
+    next(err);
   }
 });
 
 /**
- * GET /orders?status=NEW
- * Список заказов, отфильтрованных по роли:
- * - ADMIN видит все
- * - AGENT видит заказы своих клиентов
- * - USER видит заказы из своих магазинов
- * - MANAGER видит заказы своего магазина
+ * GET /orders?status=[NEW|DONE]
+ * Возвращает заказы, отфильтрованные по роли и по опциональному статусу.
  */
 router.get('/', async (req, res, next) => {
   try {
-    const { status = 'NEW' } = req.query;
-    const role               = req.user.role;
-    const userId             = req.user.id;
+    const { status } = req.query; // если undefined — фильтра по статусу не будет
+    const { role, id: userId } = req.user;
 
-    // Дополним фильтр в зависимости от роли
-    let agentFilter = {};
+    // Базовый фильтр по роли
+    const where = {};
     if (role === 'AGENT') {
-      agentFilter = { store: { user: { agentId: userId } } };
+      where.store = { user: { agentId: userId } };
     } else if (role === 'USER') {
-      agentFilter = { store: { userId } };
+      where.store = { userId };
     } else if (role === 'MANAGER') {
-      agentFilter = { store: { managerId: userId } };
+      where.store = { managerId: userId };
+    }
+    // ADMIN — без доп.ограничений
+
+    // Подключаем статус, если передан
+    if (status && ['NEW','DONE'].includes(status)) {
+      where.status = status;
     }
 
     const orders = await prisma.order.findMany({
-      where: {
-        status,
-        ...agentFilter,
-      },
+      where,
       include: {
-        store: true,
+        user:  { select: { login: true, fullName: true } },
+        store: {
+          select: {
+            title: true,
+            user: {
+              select: {
+                agent: { select: { login: true, fullName: true } }
+              }
+            }
+          }
+        },
         items: {
           include: {
-            product: true,
-          },
-        },
+            product: { select: { name: true, volume: true } }
+          }
+        }
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: {
+        createdAt: 'desc'
+      }
     });
 
     return res.json(orders);
   } catch (err) {
-    return next(err);
+    next(err);
+  }
+});
+
+/**
+ * GET /orders/:id
+ * Детализация одного заказа
+ */
+router.get('/:id', async (req, res, next) => {
+  try {
+    const order = await prisma.order.findUnique({
+      where: { id: +req.params.id },
+      include: {
+        user:  { select: { login: true, fullName: true } },
+        store: {
+          select: {
+            title: true,
+            user: {
+              select: {
+                agent: { select: { login: true, fullName: true } }
+              }
+            }
+          }
+        },
+        items: {
+          include: {
+            product: { select: { name: true, volume: true } }
+          }
+        }
+      }
+    });
+    if (!order) {
+      return res.status(404).json({ error: 'Not found' });
+    }
+    return res.json(order);
+  } catch (err) {
+    next(err);
   }
 });
 
 /**
  * PUT /orders/:id/status
- * Агент изменяет статус и добавляет комментарий
- * body: { status: 'DONE', comment?: string }
+ * Смена статуса и комментарий (только AGENT и ADMIN)
+ * body: { status: 'NEW'|'DONE', comment?: string }
  */
 router.put('/:id/status', async (req, res, next) => {
   try {
-    const orderId      = +req.params.id;
     const { status, comment = '' } = req.body;
-
     if (!['NEW','DONE'].includes(status)) {
       return res.status(400).json({ error: 'Недопустимый статус' });
     }
-
     const updated = await prisma.order.update({
-      where: { id: orderId },
-      data:  { status, agentComment: comment },
+      where: { id: +req.params.id },
+      data: { status, agentComment: comment }
     });
-
     return res.json(updated);
   } catch (err) {
-    return next(err);
+    next(err);
   }
 });
 
