@@ -14,6 +14,7 @@ import adminUserRoutes      from './routes/admin.user.routes.js';
 import adminProductRoutes   from './routes/admin.product.routes.js';
 import storeRoutes          from './routes/store.routes.js';
 
+
 const app = express();
 app.use(cors());
 app.use(morgan('dev'));
@@ -34,6 +35,7 @@ app.use('/cart', cartRoutes);
 app.use('/admin/users',     adminUserRoutes);
 app.use('/admin/products',  adminProductRoutes);
 app.use('/stores',          storeRoutes);
+app.get('/ping', authMiddleware, (req,res)=> res.json(req.user));
 
 app.use('*', (_, res) => res.status(404).json({ message: 'Not found' }));
 export default app;
