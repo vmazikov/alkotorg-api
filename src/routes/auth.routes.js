@@ -1,4 +1,3 @@
-// src/routes/auth.routes.js
 import { Router }  from 'express';
 import bcrypt      from 'bcrypt';
 import jwt         from 'jsonwebtoken';
@@ -7,109 +6,131 @@ import prisma      from '../utils/prisma.js';
 
 dotenv.config();
 
-const router = Router();
-const JWT_EXPIRES = '12h';
+const r            = Router();
+const JWT_EXPIRES  = '12h';
 
 /* ------------------------------------------------------------------ */
-/* helpers                                                            */
+/* util: формируем payload для фронта + подпись токена                */
 /* ------------------------------------------------------------------ */
-function signToken(user) {
-  /** кладём всё, что чаще всего нужно на фронте */
+function makeToken(user) {
   const payload = {
-    id            : user.id,
-    role          : user.role,
-    priceModifier : user.priceModifier ?? 0,   // для расчёта цены
+    id           : user.id,
+    role         : user.role,
+    priceModifier: user.priceModifier ?? 0
   };
-
   return jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: JWT_EXPIRES });
 }
 
 /* ------------------------------------------------------------------ */
-/* POST  /auth/login  — логин                                         */
+/* 1. POST  /auth/login                                               */
+/*    body { login, password }                                        */
 /* ------------------------------------------------------------------ */
-router.post('/login', async (req, res) => {
-  const { email = '', password = '' } = req.body;
+r.post('/login', async (req, res) => {
+  const { login = '', password = '' } = req.body;
 
   const user = await prisma.user.findUnique({
-    where: { email: email.toLowerCase().trim() },
+    where: { login: login.trim().toLowerCase() }
   });
 
-  if (!user) {
+  /* одинаковое сообщение, чтобы не палить user */
+  if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
     return res.status(401).json({ error: 'Invalid credentials' });
   }
 
-  const passOk = await bcrypt.compare(password, user.passwordHash);
-  if (!passOk) {
-    return res.status(401).json({ error: 'Invalid credentials' });
-  }
-
-  const token = signToken(user);
+  const token = makeToken(user);
 
   return res.json({
     token,
     user: {
-      id            : user.id,
-      role          : user.role,
-      email         : user.email,
-      priceModifier : user.priceModifier ?? 0,
+      id           : user.id,
+      role         : user.role,
+      fullName     : user.fullName,
+      login        : user.login,
+      phone        : user.phone,
+      priceModifier: user.priceModifier ?? 0
     },
-    expiresIn: JWT_EXPIRES,
+    expiresIn: JWT_EXPIRES
   });
 });
 
 /* ------------------------------------------------------------------ */
-/* POST  /auth/register  — создание пользователя (опц., для админа)   */
+/* 2. POST  /auth/register  (опционально, например для админ-панели)  */
+/*    body { fullName, login, phone, password, role?, priceModifier?, */
+/*           agentId? }                                               */
 /* ------------------------------------------------------------------ */
-router.post('/register', async (req, res) => {
-  const { email, password, role = 'USER', priceModifier = 0 } = req.body;
+r.post('/register', async (req, res) => {
+  const {
+    fullName      = '',
+    login         = '',
+    phone         = '',
+    password      = '',
+    role          = 'USER',
+    priceModifier = 0,
+    agentId
+  } = req.body;
 
-  /* simple guard */
-  if (!email || !password) {
-    return res.status(400).json({ error: 'E-mail and password required' });
+  if (!login.trim() || !password.trim()) {
+    return res.status(400).json({ error: 'Login and password required' });
   }
 
-  const exist = await prisma.user.findUnique({ where: { email } });
-  if (exist) {
-    return res.status(409).json({ error: 'User already exists' });
+  /* проверяем уникальность login / phone */
+  const clash = await prisma.user.findFirst({
+    where: {
+      OR: [
+        { login: login.trim().toLowerCase() },
+        phone ? { phone: phone.trim() } : { id: -1 }
+      ]
+    }
+  });
+  if (clash) {
+    return res.status(409).json({ error: 'Login or phone already in use' });
   }
 
   const passwordHash = await bcrypt.hash(password, 10);
 
   const user = await prisma.user.create({
-    data: { email: email.toLowerCase(), passwordHash, role, priceModifier },
+    data: {
+      fullName,
+      login : login.trim().toLowerCase(),
+      phone : phone.trim(),
+      passwordHash,
+      role,
+      priceModifier: +priceModifier,
+      agentId     : agentId ? +agentId : null
+    }
   });
 
-  const token = signToken(user);
+  const token = makeToken(user);
 
   return res.status(201).json({
     token,
     user: {
-      id            : user.id,
-      role          : user.role,
-      email         : user.email,
-      priceModifier : user.priceModifier ?? 0,
+      id           : user.id,
+      role         : user.role,
+      fullName     : user.fullName,
+      login        : user.login,
+      phone        : user.phone,
+      priceModifier: user.priceModifier ?? 0
     },
-    expiresIn: JWT_EXPIRES,
+    expiresIn: JWT_EXPIRES
   });
 });
 
 /* ------------------------------------------------------------------ */
-/* GET  /auth/me  — получение данных текущего пользователя из токена  */
+/* 3. GET  /auth/me   — вернуть payload, зашитый в валидный токен     */
 /* ------------------------------------------------------------------ */
-router.get('/me', (req, res) => {
+r.get('/me', (req, res) => {
   const header = req.headers.authorization || '';
   const [, token] = header.split(' ');
 
-  if (!token) {
-    return res.status(401).json({ error: 'No token provided' });
-  }
+  if (!token) return res.status(401).json({ error: 'No token provided' });
 
   try {
-    const payload = jwt.verify(token, process.env.JWT_SECRET);
-    return res.json(payload);
+    const data = jwt.verify(token, process.env.JWT_SECRET);
+    return res.json(data);
   } catch {
     return res.status(401).json({ error: 'Invalid or expired token' });
   }
 });
 
-export default router;
+export default r;

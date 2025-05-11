@@ -1,41 +1,60 @@
-import express from 'express';
-import cors from 'cors';
-import morgan from 'morgan';
-import swaggerUi from 'swagger-ui-express';
-import swaggerJsdoc from 'swagger-jsdoc';
-import authRoutes from './routes/auth.routes.js';
-import productRoutes from './routes/product.routes.js';
-import orderRoutes from './routes/order.routes.js';
-import adminRoutes from './routes/admin.routes.js';
-import priceRoutes from './routes/admin.price.routes.js';
-import { authMiddleware } from './middlewares/auth.js';
-import cartRoutes from './routes/cart.routes.js';
-import adminUserRoutes      from './routes/admin.user.routes.js';
-import adminProductRoutes   from './routes/admin.product.routes.js';
-import storeRoutes          from './routes/store.routes.js';
+import express           from 'express';
+import cors              from 'cors';
+import morgan            from 'morgan';
+import swaggerUi         from 'swagger-ui-express';
+import swaggerJsdoc      from 'swagger-jsdoc';
 
+import authRoutes        from './routes/auth.routes.js';
+import productRoutes     from './routes/product.routes.js';
+import orderRoutes       from './routes/order.routes.js';
+import adminRoutes       from './routes/admin.routes.js';
+import cartRoutes        from './routes/cart.routes.js';
+import storeRoutes       from './routes/store.routes.js';
+
+import { authMiddleware } from './middlewares/auth.js';
 
 const app = express();
+
+// ─── Global middleware ───────────────────────────────────────────────
 app.use(cors());
 app.use(morgan('dev'));
 app.use(express.json());
 
-const spec = swaggerJsdoc({
-  definition: { openapi: '3.0.0', info: { title: 'Alkotorg API', version: '0.2.0' } },
+// ─── Swagger UI ─────────────────────────────────────────────────────
+const swaggerSpec = swaggerJsdoc({
+  definition: {
+    openapi: '3.0.0',
+    info: { title: 'Alkotorg API', version: '0.2.0' },
+  },
   apis: ['./src/routes/*.js'],
 });
-app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(spec));
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
+// ─── Public routes ───────────────────────────────────────────────────
 app.use('/auth', authRoutes);
 app.use('/products', productRoutes);
-app.use('/orders', authMiddleware, orderRoutes);
-app.use('/admin', authMiddleware, adminRoutes);
-app.use('/admin/price', authMiddleware, priceRoutes);
-app.use('/cart', cartRoutes);
-app.use('/admin/users',     adminUserRoutes);
-app.use('/admin/products',  adminProductRoutes);
-app.use('/stores',          storeRoutes);
-app.get('/ping', authMiddleware, (req,res)=> res.json(req.user));
 
-app.use('*', (_, res) => res.status(404).json({ message: 'Not found' }));
+// ─── Protected routes ────────────────────────────────────────────────
+// Все запросы к /orders требуют авторизации
+app.use('/orders', authMiddleware, orderRoutes);
+
+// Админка: один роутер для всех /admin/*
+app.use('/admin', authMiddleware, adminRoutes);
+
+// Корзина тоже под авторизацией
+app.use('/cart', authMiddleware, cartRoutes);
+
+// Магазины под авторизацией
+app.use('/stores', authMiddleware, storeRoutes);
+
+// Health check
+app.get('/ping', authMiddleware, (req, res) => {
+  res.json({ ok: true, user: req.user });
+});
+
+// Catch-all 404
+app.use('*', (_req, res) => {
+  res.status(404).json({ message: 'Not found' });
+});
+
 export default app;

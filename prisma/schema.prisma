@@ -9,8 +9,9 @@ generator client {
 
 model User {
   id            Int    @id @default(autoincrement())
-  email         String @unique
+  login         String @unique
   phone         String @unique
+  fullName      String?
   passwordHash  String
   role          Role   @default(USER)
   priceModifier Float  @default(0)

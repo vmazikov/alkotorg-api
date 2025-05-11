@@ -1,4 +1,4 @@
-
+// src/routes/admin/users.routes.js
 import { Router } from 'express';
 import bcrypt     from 'bcrypt';
 import prisma     from '../utils/prisma.js';

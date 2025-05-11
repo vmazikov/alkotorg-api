@@ -1,14 +1,37 @@
 // seed.js
-import bcrypt from 'bcrypt';
-import prisma from './src/utils/prisma.js';
+import bcrypt from 'bcrypt'
+import prisma from './src/utils/prisma.js'
 
-const email = 'admin@mail.com';
-const plain = 'admin123';
-const phone = '1234567890';
+async function main() {
+  const login = 'admin'
+  const plain = 'admin123'
+  const phone = '1234567890'
 
-const hash = await bcrypt.hash(plain, 10);
-await prisma.user.create({
-  data: { email, passwordHash: hash, phone: phone, role: 'ADMIN' },
-});
-console.log('User created:', email, plain);
-await prisma.$disconnect();
+  const passwordHash = await bcrypt.hash(plain, 10)
+
+  const user = await prisma.user.upsert({
+    where: { phone },
+    update: {
+      login,
+      passwordHash,
+      role: 'ADMIN',
+    },
+    create: {
+      login,
+      passwordHash,
+      phone,
+      role: 'ADMIN',
+    },
+  })
+
+  console.log('Admin user:', user.login, '– credentials:', plain)
+}
+
+main()
+  .catch(e => {
+    console.error(e)
+    process.exit(1)
+  })
+  .finally(async () => {
+    await prisma.$disconnect()
+  })
