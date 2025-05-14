@@ -53,6 +53,7 @@ model Product {
   basePrice     Float
   img           String?
   stock         Int     @default(0)
+  nonModify    Boolean @default(false)
   isArchived    Boolean @default(false)
 
   wineColor      String?

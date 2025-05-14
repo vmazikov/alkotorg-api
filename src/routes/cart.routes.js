@@ -1,6 +1,6 @@
 // src/routes/cart.routes.js
-import { Router }       from 'express';
-import prisma           from '../utils/prisma.js';
+import { Router }         from 'express';
+import prisma             from '../utils/prisma.js';
 import { authMiddleware } from '../middlewares/auth.js';
 
 const router = Router();
@@ -13,19 +13,11 @@ router.use(authMiddleware);
 /** гарантируем запись Cart, возвращаем id */
 async function ensureCart(userId, storeId = 0) {
   const cart = await prisma.cart.upsert({
-    where  : { userId_storeId: { userId, storeId } },
-    update : {},
-    create : { userId, storeId }
+    where: { userId_storeId: { userId, storeId } },
+    update: {},
+    create: { userId, storeId }
   });
   return cart.id;
-}
-
-/** финальная цена с учётом promo + надбавки */
-function calcPrice(product, priceModifier) {
-  const base = product.promos.length
-    ? product.promos[0].promoPrice
-    : product.basePrice;
-  return +(base * (1 + priceModifier)).toFixed(2);
 }
 
 /*───────────────────────────────────────────────────────────────────*/
@@ -35,15 +27,17 @@ router.get('/', async (req, res, next) => {
   try {
     const storeId = +req.query.storeId || 0;
 
-    /* берём надбавку пользователя */
+    // 1) Получаем priceModifier проценты пользователя
     const { priceModifier } = await prisma.user.findUnique({
-      where : { id: req.user.id },
+      where: { id: req.user.id },
       select: { priceModifier: true }
     });
+    // Превращаем в множитель: 10% → 0.10, factor = 1.10
+    const factor = 1 + (priceModifier / 100);
 
-    /* корзина + продукты + действующие акции */
+    // 2) Загружаем корзину вместе с продуктами и их текущими акциями
     const cart = await prisma.cart.findUnique({
-      where  : { userId_storeId: { userId: req.user.id, storeId } },
+      where: { userId_storeId: { userId: req.user.id, storeId } },
       include: {
         items: {
           include: {
@@ -61,17 +55,29 @@ router.get('/', async (req, res, next) => {
       }
     });
 
-    /* маппим в формат, который удобно рендерить на фронте */
+    // 3) Маппим items в финальный формат
     const items = (cart?.items || []).map(i => {
-      const price = calcPrice(i.product, priceModifier);
+      const p = i.product;
+      const qty = i.qty;
+
+      // выбираем «сырую» цену: промо или базовую
+      const raw = p.promos.length
+        ? p.promos[0].promoPrice
+        : p.basePrice;
+
+      // если nonModify=true, не применяем factor
+      const price = p.nonModify
+        ? raw
+        : + (raw * factor).toFixed(2);
+
       return {
-        productId : i.productId,
-        name      : i.product.name,
-        volume    : i.product.volume,
-        degree    : i.product.degree,
-        qty       : i.qty,
-        price,                // цена за штуку
-        totalItem : +(price * i.qty).toFixed(2)
+        productId : p.id,
+        name      : p.name,
+        volume    : p.volume,
+        degree    : p.degree,
+        qty,
+        price,                              // цена за штуку уже с модификатором
+        totalItem : + (price * qty).toFixed(2)
       };
     });
 
