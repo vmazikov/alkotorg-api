@@ -8,53 +8,68 @@ generator client {
 }
 
 model User {
-  id            Int    @id @default(autoincrement())
-  login         String @unique
-  phone         String @unique
+  id            Int      @id @default(autoincrement())
+  login         String   @unique
+  phone         String   @unique
   fullName      String?
   passwordHash  String
-  role          Role   @default(USER)
-  priceModifier Float  @default(0)
+  role          Role     @default(USER)
+  priceModifier Float    @default(0)
 
-  agent   User?  @relation("AgentClients", fields: [agentId], references: [id])
-  clients User[] @relation("AgentClients")
-  agentId Int?
+  // связь «клиент → агент»
+  agent        User?    @relation("AgentClients", fields: [agentId], references: [id])
+  clients      User[]   @relation("AgentClients")
+  agentId      Int?
 
-  stores       Store[]
-  storeManaged Store?  @relation("StoreManager")
+  telegramId   String?  @unique
 
-  orders    Order[]
-  createdAt DateTime @default(now())
+  // магазины, в которых он покупатель
+  stores       Store[]  
+  // магазины, за которые он как агент отвечает
+  agentStores  Store[]  @relation("AgentStores")
+
+  // менеджер одного магазина
+  storeManaged Store?   @relation("StoreManager")
+
+  orders       Order[]
+  createdAt    DateTime @default(now())
 }
 
 model Store {
-  id      Int    @id @default(autoincrement())
-  title   String
-  address String
-  userId  Int
-  user    User   @relation(fields: [userId], references: [id])
+  id         Int      @id @default(autoincrement())
+  title      String
+  address    String
 
-  managerId Int?  @unique
-  manager   User? @relation("StoreManager", fields: [managerId], references: [id])
+  // владелец (клиент)
+  userId     Int
+  user       User     @relation(fields: [userId], references: [id])
 
-  orders Order[]
+  // агент, к которому привязан магазин
+  agentId    Int?
+  agent      User?    @relation("AgentStores", fields: [agentId], references: [id])
+
+  // менеджер этого магазина
+  managerId  Int?     @unique
+  manager    User?    @relation("StoreManager", fields: [managerId], references: [id])
+
+  orders     Order[]
 }
 
 model Product {
-  id            Int     @id @default(autoincrement())
-  productId     String  @unique
-  article       String? @unique
+  id            Int       @id @default(autoincrement())
+  productId     String    @unique
+  article       String?   @unique
   name          String
   brand         String?
   type          String?
-  volume        Float? // ← было String?
-  degree        Float? // оставляем числом
+  volume        Float?    // ранее было String
+  degree        Float?
   quantityInBox Int?
   basePrice     Float
   img           String?
-  stock         Int     @default(0)
-  nonModify    Boolean @default(false)
-  isArchived    Boolean @default(false)
+  stock         Int       @default(0)
+  nonModify     Boolean   @default(false)
+  isArchived    Boolean   @default(false)
 
   wineColor      String?
   sweetnessLevel String?
@@ -65,10 +80,10 @@ model Product {
   rawMaterials   String?
   taste          String?
 
-  promos     Promo[]
-  orderItems OrderItem[]
-  createdAt  DateTime    @default(now())
-  cartItems  CartItem[]
+  promos        Promo[]
+  orderItems    OrderItem[]
+  cartItems     CartItem[]
+  createdAt     DateTime  @default(now())
 }
 
 model Promo {
@@ -81,33 +96,28 @@ model Promo {
 }
 
 model Order {
-  id      Int   @id @default(autoincrement())
-  storeId Int
-  store   Store @relation(fields: [storeId], references: [id])
-  userId  Int // кто оформил (USER либо MANAGER)
-  user    User  @relation(fields: [userId], references: [id])
+  id           Int         @id @default(autoincrement())
+  storeId      Int
+  store        Store       @relation(fields: [storeId], references: [id])
+  userId       Int         // кто оформил (USER или MANAGER)
+  user         User        @relation(fields: [userId], references: [id])
 
   total        Float
   status       OrderStatus @default(NEW)
   agentComment String?
 
-  items     OrderItem[]
-  createdAt DateTime    @default(now())
+  items        OrderItem[]
+  createdAt    DateTime    @default(now())
 }
 
 model OrderItem {
-  id        Int     @id @default(autoincrement())
-  order     Order   @relation(fields: [orderId], references: [id])
-  orderId   Int
-  product   Product @relation(fields: [productId], references: [id])
-  productId Int
-  price     Float
-  quantity  Int
-}
-
-enum OrderStatus {
-  NEW
-  DONE
+  id         Int     @id @default(autoincrement())
+  orderId    Int
+  order      Order   @relation(fields: [orderId], references: [id])
+  productId  Int
+  product    Product @relation(fields: [productId], references: [id])
+  price      Float
+  quantity   Int
 }
 
 model Cart {
@@ -121,13 +131,13 @@ model Cart {
 }
 
 model CartItem {
-  id        Int @id @default(autoincrement())
+  id        Int     @id @default(autoincrement())
   cartId    Int
+  cart      Cart    @relation(fields: [cartId], references: [id])
   productId Int
+  product   Product @relation(fields: [productId], references: [id])
   qty       Int
 
-  product Product @relation(fields: [productId], references: [id])
-  cart    Cart    @relation(fields: [cartId], references: [id])
   @@unique([cartId, productId])
 }
 
@@ -136,4 +146,9 @@ enum Role {
   AGENT
   USER
   MANAGER
+}
+
+enum OrderStatus {
+  NEW
+  DONE
 }
