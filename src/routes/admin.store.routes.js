@@ -1,76 +1,106 @@
 // src/routes/admin.store.routes.js
 import { Router } from 'express';
-import prisma                   from '../utils/prisma.js';
+import prisma       from '../utils/prisma.js';
 import { authMiddleware, role } from '../middlewares/auth.js';
 
 const router = Router();
 
-/* сначала — авторизация, чтобы был req.user */
+// Все /admin/stores/* защищены JWT + роль ADMIN или AGENT
 router.use(authMiddleware);
+router.use(role(['ADMIN', 'AGENT']));
 
 /* ------------------------------------------------------------------
-   GET /stores
-   ADMIN / AGENT           → все магазины  (доступен фильтр ?userId=)
-   USER                    → только свои   (store.userId = req.user.id)
-   MANAGER                 → только свой   (store.managerId = req.user.id)
+   GET /admin/stores
+   • ADMIN   → все магазины (фильтр ?userId= работает)
+   • AGENT   → только свои (store.userId = req.user.id)
 -------------------------------------------------------------------*/
-router.get('/', async (req, res) => {
-  let where = {};
+router.get('/', async (req, res, next) => {
+  try {
+    const where = {};
 
-  if (req.query.userId) where.userId = +req.query.userId;
-  if (req.user.role === 'USER')     where.userId   = req.user.id;
-  if (req.user.role === 'MANAGER')  where.managerId = req.user.id;
+    if (req.user.role === 'ADMIN') {
+      // для админа: можно фильтровать по ?userId=
+      if (req.query.userId) {
+        where.userId = Number(req.query.userId);
+      }
+    } else {
+      // для агента: только свои, даже если передан ?userId
+      where.userId = req.user.id;
+    }
 
-  const stores = await prisma.store.findMany({
-    where,
-    include: { user: true, manager: true }
-  });
-  res.json(stores);
+    const stores = await prisma.store.findMany({
+      where,
+      include: { user: true, manager: true },
+    });
+    res.json(stores);
+  } catch (err) {
+    next(err);
+  }
 });
 
 /* ------------------------------------------------------------------
-   POST /stores  – только ADMIN и AGENT
+   POST /admin/stores
+   • ADMIN → может указывать любой userId
+   • AGENT → создаёт только для себя (userId = req.user.id)
 -------------------------------------------------------------------*/
-router.post(
-  '/',
-  role(['ADMIN', 'AGENT']),
-  async (req, res) => {
-    const { userId, title, address, managerId = null } = req.body;
+router.post('/', async (req, res, next) => {
+  try {
+    let { userId, title, address, managerId = null } = req.body;
+
+    if (req.user.role === 'AGENT') {
+      // агент всегда создаёт под свою учётку
+      userId = req.user.id;
+    }
 
     const store = await prisma.store.create({
       data: {
-        userId:    +userId,
+        userId:    Number(userId),
         title,
         address,
-        managerId: managerId ? +managerId : null,
+        managerId: managerId ? Number(managerId) : null,
       },
-      include: { user: true, manager: true }
+      include: { user: true, manager: true },
     });
+
     res.status(201).json(store);
+  } catch (err) {
+    next(err);
   }
-);
+});
 
 /* ------------------------------------------------------------------
-   PUT /stores/:id – только ADMIN и AGENT
+   PUT /admin/stores/:id
+   • ADMIN → может править любой магазин
+   • AGENT → только свои (store.userId = req.user.id)
 -------------------------------------------------------------------*/
-router.put(
-  '/:id',
-  role(['ADMIN', 'AGENT']),
-  async (req, res) => {
-    const id = +req.params.id;
+router.put('/:id', async (req, res, next) => {
+  try {
+    const storeId = Number(req.params.id);
+
+    // проверяем право агента
+    if (req.user.role === 'AGENT') {
+      const existing = await prisma.store.findUnique({ where: { id: storeId } });
+      if (!existing || existing.userId !== req.user.id) {
+        return res.status(403).json({ error: 'Нет доступа к этому магазину' });
+      }
+    }
+
     const { title, address, managerId = null } = req.body;
 
-    const store = await prisma.store.update({
-      where: { id },
-      data:  {
+    const updated = await prisma.store.update({
+      where: { id: storeId },
+      data: {
         title,
         address,
-        managerId: managerId ? +managerId : null,
+        managerId: managerId ? Number(managerId) : null,
       },
-      include: { user: true, manager: true }
+      include: { user: true, manager: true },
     });
-    res.json(store);
+
+    res.json(updated);
+  } catch (err) {
+    next(err);
   }
-);
+});
 
 export default router;

@@ -1,9 +1,11 @@
+// src/routes/admin.routes.js
 import { Router } from 'express';
+import { role }   from '../middlewares/auth.js';
 
 import usersRouter    from './admin.user.routes.js';
 import productsRouter from './admin.product.routes.js';
 import priceRouter    from './admin.price.routes.js';
-// (можно подключить и другие админские под-роуты, например ordersRouter)
+import storesRouter   from './admin.store.routes.js';
 
 const router = Router();
 
@@ -12,13 +14,32 @@ router.get('/', (_req, res) => {
   res.json({ message: 'Admin API root' });
 });
 
-// Все пути /admin/users/* → admin.user.routes.js
-router.use('/users', usersRouter);
+// Доступ /admin/users/* для ADMIN и AGENT
+router.use(
+  '/users',
+  role(['ADMIN','AGENT']),
+  usersRouter
+);
 
-// Все пути /admin/products/* → admin.product.routes.js
-router.use('/products', productsRouter);
+// Доступ /admin/stores/* для ADMIN и AGENT
+router.use(
+  '/stores',
+  role(['ADMIN','AGENT']),
+  storesRouter
+);
 
-// Все пути /admin/price/* → admin.price.routes.js
-router.use('/price', priceRouter);
+// Доступ /admin/products/* только для ADMIN
+router.use(
+  '/products',
+  role(['ADMIN']),
+  productsRouter
+);
+
+// Доступ /admin/price/* только для ADMIN
+router.use(
+  '/price',
+  role(['ADMIN']),
+  priceRouter
+);
 
 export default router;
