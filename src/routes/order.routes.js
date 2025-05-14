@@ -234,4 +234,30 @@ router.put('/:id/status', async (req, res, next) => {
   }
 });
 
+/**
+ * DELETE /orders/:id
+ * Удалить заказ — доступно только ADMIN
+ */
+// DELETE /orders/:id
+router.delete('/:id', async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    // только ADMIN
+    if (req.user.role !== 'ADMIN') {
+      return res.status(403).json({ error: 'Нет доступа' });
+    }
+    // сначала удаляем все OrderItem
+    await prisma.orderItem.deleteMany({
+      where: { orderId: id }
+    });
+    // потом сам заказ
+    await prisma.order.delete({
+      where: { id }
+    });
+    res.sendStatus(204);
+  } catch (err) {
+    next(err);
+  }
+});
+
 export default router;
