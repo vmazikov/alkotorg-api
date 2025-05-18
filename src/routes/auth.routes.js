@@ -1,3 +1,4 @@
+// src/routes/auth.routes.js
 import { Router }  from 'express';
 import bcrypt      from 'bcrypt';
 import jwt         from 'jsonwebtoken';
@@ -34,7 +35,9 @@ r.post('/login', async (req, res) => {
 
   /* одинаковое сообщение, чтобы не палить user */
   if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
-    return res.status(401).json({ error: 'Invalid credentials' });
+    return res
+      .status(401)
+      .json({ error: 'Invalid credentials', code: 'AUTH_INVALID_CREDENTIALS' });
   }
 
   const token = makeToken(user);
@@ -54,7 +57,7 @@ r.post('/login', async (req, res) => {
 });
 
 /* ------------------------------------------------------------------ */
-/* 2. POST  /auth/register  (опционально, например для админ-панели)  */
+/* 2. POST  /auth/register                                            */
 /*    body { fullName, login, phone, password, role?, priceModifier?, */
 /*           agentId? }                                               */
 /* ------------------------------------------------------------------ */
@@ -70,7 +73,9 @@ r.post('/register', async (req, res) => {
   } = req.body;
 
   if (!login.trim() || !password.trim()) {
-    return res.status(400).json({ error: 'Login and password required' });
+    return res
+      .status(400)
+      .json({ error: 'Login and password required', code: 'REGISTER_MISSING_FIELDS' });
   }
 
   /* проверяем уникальность login / phone */
@@ -83,7 +88,9 @@ r.post('/register', async (req, res) => {
     }
   });
   if (clash) {
-    return res.status(409).json({ error: 'Login or phone already in use' });
+    return res
+      .status(409)
+      .json({ error: 'Login or phone already in use', code: 'REGISTER_CONFLICT' });
   }
 
   const passwordHash = await bcrypt.hash(password, 10);
@@ -123,13 +130,19 @@ r.get('/me', (req, res) => {
   const header = req.headers.authorization || '';
   const [, token] = header.split(' ');
 
-  if (!token) return res.status(401).json({ error: 'No token provided' });
+  if (!token) {
+    return res
+      .status(401)
+      .json({ error: 'No token provided', code: 'AUTH_NO_TOKEN' });
+  }
 
   try {
     const data = jwt.verify(token, process.env.JWT_SECRET);
     return res.json(data);
-  } catch {
-    return res.status(401).json({ error: 'Invalid or expired token' });
+  } catch (err) {
+    return res
+      .status(401)
+      .json({ error: 'Invalid or expired token', code: 'AUTH_INVALID_TOKEN' });
   }
 });
 
