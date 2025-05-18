@@ -6,6 +6,7 @@ import usersRouter    from './admin.user.routes.js';
 import productsRouter from './admin.product.routes.js';
 import priceRouter    from './admin.price.routes.js';
 import storesRouter   from './admin.store.routes.js';
+import stockRulesRouter from './admin.stockRules.routes.js';
 
 const router = Router();
 
@@ -40,6 +41,12 @@ router.use(
   '/price',
   role(['ADMIN']),
   priceRouter
+);
+// Доступ /admin/stock-rules/* только для ADMIN
+router.use(
+  '/stock-rules',
+  role(['ADMIN']),
+  stockRulesRouter
 );
 
 export default router;

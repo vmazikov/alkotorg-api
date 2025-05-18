@@ -40,18 +40,27 @@ router.put('/:id', async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     const data = {};
-    [ 'article','name','brand','type','img',
+
+    // Текстовые поля
+    [
+      'article','name','brand','type','img',
       'wineColor','sweetnessLevel','wineType','giftPackaging',
-      'manufacturer','excerpt','rawMaterials','taste'
+      'manufacturer','excerpt','rawMaterials','taste',
+      'description'           // ← добавлено
     ].forEach(key => {
-      if (req.body[key] !== undefined) data[key] = req.body[key];
+      if (req.body[key] !== undefined) {
+        data[key] = req.body[key];
+      }
     });
+
+    // Числовые поля
     [ 'volume','degree','basePrice','stock' ].forEach(key => {
       if (req.body[key] !== undefined) {
         const v = req.body[key];
         data[key] = v === null ? null : Number(v);
       }
     });
+
     const updated = await prisma.product.update({
       where: { id },
       data,
