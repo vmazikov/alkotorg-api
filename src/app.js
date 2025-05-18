@@ -17,7 +17,15 @@ import { authMiddleware } from './middlewares/auth.js';
 const app = express();
 
 // ─── Global middleware ───────────────────────────────────────────────
-app.use(cors());
+app.use(cors({
+  origin: ['http://localhost:5173', 'https://6649-79-127-249-103.ngrok-free.app'],
+  credentials: true,
+}));
+
+
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true }));
+  
 app.use(morgan('dev'));
 app.use(express.json());
 
@@ -47,11 +55,6 @@ app.use('/cart', authMiddleware, cartRoutes);
 
 // Магазины под авторизацией
 app.use('/stores', authMiddleware, storeRoutes);
-
-// Health check
-app.get('/ping', authMiddleware, (req, res) => {
-  res.json({ ok: true, user: req.user });
-});
 
 // Catch-all 404
 app.use('*', (_req, res) => {
