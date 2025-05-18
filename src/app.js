@@ -1,9 +1,12 @@
+// src/app.js
 import './utils/telegramBot.js';
 import express           from 'express';
 import cors              from 'cors';
 import morgan            from 'morgan';
 import swaggerUi         from 'swagger-ui-express';
 import swaggerJsdoc      from 'swagger-jsdoc';
+import path              from 'path';
+import { fileURLToPath } from 'url';
 
 import authRoutes        from './routes/auth.routes.js';
 import productRoutes     from './routes/product.routes.js';
@@ -16,18 +19,29 @@ import { authMiddleware } from './middlewares/auth.js';
 
 const app = express();
 
+// ─── __dirname для ESM ───────────────────────────────────────────────
+const __filename = fileURLToPath(import.meta.url);
+const __dirname  = path.dirname(__filename);
+
+// ─── Статика для изображений ─────────────────────────────────────────
+// Отдаём файлы из папки uploads/img по запросу на /img/<filename>
+app.use(
+  '/img',
+  express.static(path.join(__dirname, '..', 'uploads', 'img'))
+);
+
 // ─── Global middleware ───────────────────────────────────────────────
 app.use(cors({
-  origin: ['http://localhost:5173', 'https://6649-79-127-249-103.ngrok-free.app'],
+  origin: [
+    'http://localhost:5173',
+    'https://6649-79-127-249-103.ngrok-free.app'
+  ],
   credentials: true,
 }));
 
-
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
-  
 app.use(morgan('dev'));
-app.use(express.json());
 
 // ─── Swagger UI ─────────────────────────────────────────────────────
 const swaggerSpec = swaggerJsdoc({
@@ -44,19 +58,14 @@ app.use('/auth', authRoutes);
 app.use('/products', productRoutes);
 
 // ─── Protected routes ────────────────────────────────────────────────
-// Все запросы к /orders требуют авторизации
 app.use('/orders', authMiddleware, orderRoutes);
-
-// Админка: один роутер для всех /admin/*
-app.use('/admin', authMiddleware, adminRoutes);
-
-// Корзина тоже под авторизацией
-app.use('/cart', authMiddleware, cartRoutes);
-
-// Магазины под авторизацией
+app.use('/cart',   authMiddleware, cartRoutes);
 app.use('/stores', authMiddleware, storeRoutes);
 
-// Catch-all 404
+// ─── Admin routes ────────────────────────────────────────────────────
+app.use('/admin', authMiddleware, adminRoutes);
+
+// ─── Catch-all 404 ───────────────────────────────────────────────────
 app.use('*', (_req, res) => {
   res.status(404).json({ message: 'Not found' });
 });
