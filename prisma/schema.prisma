@@ -71,6 +71,8 @@ model Product {
   nonModify     Boolean   @default(false)
   isArchived    Boolean   @default(false)
 
+  countryOfOrigin String?
+  whiskyType     
   wineColor      String?
   sweetnessLevel String?
   wineType       String?

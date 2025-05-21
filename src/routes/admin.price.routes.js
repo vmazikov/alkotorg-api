@@ -1,5 +1,4 @@
 // src/routes/admin/price.routes.js
-
 import { Router } from 'express';
 import multer from 'multer';
 import xlsx from 'xlsx';
@@ -12,7 +11,7 @@ const upload  = multer({ dest: 'uploads/' });
 
 /**
  * POST /admin/price/upload?mode=update|add|full
- *  update – только обновляем цены/остатки
+ *  update – обновляем (если товара нет — пропускаем)
  *  add    – добавляем новые + обновляем существующие
  *  full   – архивируем всё, затем add
  */
@@ -34,45 +33,49 @@ router.post(
     for (const r of rows) {
       const data = mapRow(r);
 
-      // уникальный ключ: productId или article
+      // главный уникальный ключ
       const uniqueWhere = data.productId
         ? { productId: data.productId }
         : data.article
           ? { article: data.article }
           : null;
 
-      if (!uniqueWhere) {
-        skipped++;
-        continue;
-      }
+      if (!uniqueWhere) { skipped++; continue; }
 
       const existing = await prisma.product.findUnique({ where: uniqueWhere });
 
       // режим update: если товара нет – пропускаем
-      if (!existing && mode === 'update') {
-        skipped++;
-        continue;
-      }
+      if (!existing && mode === 'update') { skipped++; continue; }
 
-      // upsert: создаём или обновляем
+      /* -------------------------------------------------------------
+         upsert: обновляем или создаём
+         ─ при update/add/full:
+           • цены и остаток — всегда
+           • countryOfOrigin / whiskyType — если пришли непустые
+      --------------------------------------------------------------*/
+      const baseUpdate = {
+        basePrice: data.basePrice,
+        stock:      data.stock,
+        isArchived: false,
+      };
+
+      if (data.countryOfOrigin != null) baseUpdate.countryOfOrigin = data.countryOfOrigin; // NEW
+      if (data.whiskyType      != null) baseUpdate.whiskyType      = data.whiskyType;      // NEW
+
       const product = await prisma.product.upsert({
-        where: uniqueWhere,
-        update: {
-          basePrice: data.basePrice,
-          stock:      data.stock,
-          isArchived: false,
-        },
+        where:  uniqueWhere,
+        update: baseUpdate,
         create: data,
       });
 
       existing ? updated++ : added++;
 
-      // промо-цена
+      // промо-цена (как было)
       if (data.promo) {
         await prisma.promo.upsert({
-          where:   { productId: product.id },
-          update:  data.promo,
-          create:  { ...data.promo, product: { connect: { id: product.id } } },
+          where:  { productId: product.id },
+          update: data.promo,
+          create: { ...data.promo, product: { connect: { id: product.id } } },
         });
       }
     }
@@ -82,28 +85,32 @@ router.post(
     }
 
     res.json({ added, updated, archived, skipped });
-  },
+  }
 );
 
+/* ───────────────────────────────────────── helpers ───────────────────────────────────────── */
 
-// ──────────────────────────────────────────────────────────
-// helpers
 function mapRow(r) {
-  // первичные ключи
+  /* первичные ключи */
   const productId = r.ProductID ? String(r.ProductID) : null;
   const article   = r.Article   ? String(r.Article)   : null;
 
-  // парсим числа и строки
+  /* основные поля */
   const name          = r.ProductName || r.name || '';
   const brand         = r.brand       || null;
   const type          = r.Type        || null;
+
   const volume        = toFloat(r.Volume);
   const degree        = toFloat(r.degree);
   const quantityInBox = toInt(r.QuantityInBox);
   const basePrice     = toFloat(r.BasePrice);
   const stock         = toInt(r.VolumeInStock);
 
-  // nonModify: булево или строка
+  /* NEW — дополнительные атрибуты */
+  const countryOfOrigin = r.CountryOfOrigin || r.Country || r.countryOfOrigin || null;
+  const whiskyType      = r.WhiskyType      || r.whiskyType || null;
+
+  /* nonModify */
   const nonModify = (() => {
     const v = r.nonModify;
     if (typeof v === 'boolean') return v;
@@ -111,14 +118,14 @@ function mapRow(r) {
     return false;
   })();
 
-  // выбор картинки: newImg > img > null
+  /* изображение */
   const imgPath = r.newImg
     ? String(r.newImg).trim()
     : r.img
       ? String(r.img).trim()
       : null;
 
-  // остальные поля
+  /* «винные» поля */
   const wineColor      = r.WineColor      || null;
   const sweetnessLevel = r.SweetnessLevel || null;
   const wineType       = r.wineType       || null;
@@ -129,7 +136,7 @@ function mapRow(r) {
   const taste          = r.taste          || null;
   const description    = r.description    || null;
 
-  // промо-данные
+  /* промо */
   const promo = r.promoPrice
     ? {
         promoPrice: toFloat(r.promoPrice),
@@ -138,6 +145,7 @@ function mapRow(r) {
       }
     : undefined;
 
+  /* итоговый объект */
   return {
     productId,
     article,
@@ -151,6 +159,12 @@ function mapRow(r) {
     stock,
     nonModify,
     img: imgPath,
+
+    /* NEW */
+    countryOfOrigin,
+    whiskyType,
+
+    /* старые доп. поля */
     wineColor,
     sweetnessLevel,
     wineType,
@@ -160,6 +174,7 @@ function mapRow(r) {
     rawMaterials,
     taste,
     description,
+
     promo,
   };
 }
