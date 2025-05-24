@@ -14,6 +14,7 @@ import orderRoutes       from './routes/order.routes.js';
 import adminRoutes       from './routes/admin.routes.js';
 import cartRoutes        from './routes/cart.routes.js';
 import storeRoutes       from './routes/store.routes.js';
+import filtersRouter     from './routes/filters.routes.js';
 
 import { authMiddleware } from './middlewares/auth.js';
 
@@ -28,6 +29,10 @@ const __dirname  = path.dirname(__filename);
 app.use(
   '/img',
   express.static(path.join(__dirname, '..', 'uploads', 'img'))
+);
+
+app.get('/img/*', (_, res) =>
+  res.sendFile(path.join(__dirname, '..', 'uploads', 'img', 'placeholder.png'))
 );
 
 // ─── Global middleware ───────────────────────────────────────────────
@@ -56,11 +61,13 @@ app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 // ─── Public routes ───────────────────────────────────────────────────
 app.use('/auth', authRoutes);
 app.use('/products', productRoutes);
+app.use('/filters', filtersRouter);
 
 // ─── Protected routes ────────────────────────────────────────────────
 app.use('/orders', authMiddleware, orderRoutes);
 app.use('/cart',   authMiddleware, cartRoutes);
 app.use('/stores', authMiddleware, storeRoutes);
+
 
 // ─── Admin routes ────────────────────────────────────────────────────
 app.use('/admin', authMiddleware, adminRoutes);
@@ -69,5 +76,9 @@ app.use('/admin', authMiddleware, adminRoutes);
 app.use('*', (_req, res) => {
   res.status(404).json({ message: 'Not found' });
 });
+
+app.set('etag', false); 
+
+
 
 export default app;

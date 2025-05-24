@@ -3,6 +3,7 @@ import { Router } from 'express';
 import prisma from '../utils/prisma.js';
 import { Prisma } from '@prisma/client'; 
 import { authMiddleware } from '../middlewares/auth.js';
+import buildWhere from '../utils/buildWhere.js';   // ← добавили
 
 const router = Router();
 
@@ -100,42 +101,36 @@ router.get('/search', async (req, res, next) => {
 
 
 /* ------------------------------------------------------------------
-   GET /products
+   GET /products   —  курсорная пагинация + фильтры + модификация цен
+   Пример запроса:
+     /products?type=whisky&priceMax=50&limit=50
+     /products?limit=50&cursor=1234          ← подгрузка следующей страницы
 -------------------------------------------------------------------*/
 router.get('/', async (req, res, next) => {
   try {
+    res.set('Cache-Control', 'no-store');
+    /* ────────── query-string ------------------------------------------------ */
     const {
-      search,
-      priceMin,
-      priceMax,
-      volumes,
-      degree,
-      sort,
-      type,
+      /* пагинация */
+      limit  = 50,          // сколько карточек вернуть за раз
+      cursor,               // id последней карточки предыдущей страницы
 
-      // существующие чек-боксы
-      brand,
-      wineColor,
-      sweetnessLevel,
-      wineType,
-      giftPackaging,
-      excerpt,
-      taste,
+      /* фильтры */
+      search, priceMin, priceMax, volumes, degree, sort, type,
 
-      // НОВЫЕ чек-боксы
-      countryOfOrigin,
-      whiskyType,
+      // «старые» чек-боксы
+      brand, wineColor, sweetnessLevel, wineType,
+      giftPackaging, excerpt, taste,
+
+      // новые чек-боксы
+      countryOfOrigin, whiskyType,
     } = req.query;
 
-    /* 1) модификатор цены пользователя ----------------------------------- */
-    const user = await prisma.user.findUnique({
-      where: { id: req.user.id },
-      select: { priceModifier: true },
-    });
-    const factor = 1 + user.priceModifier / 100;
+    /* ────────── модификатор цены пользователя ------------------------------ */
+    const factor = await getUserFactor(req.user.id);   // helper из файла выше
 
-    /* 2) фильтры ----------------------------------------------------------- */
-    const where = { isArchived: false };
+    /* ────────── WHERE ------------------------------------------------------ */
+    const where = buildWhere(req.query);
 
     if (type)     where.type   = type;
     if (search)   where.name   = { contains: search, mode: 'insensitive' };
@@ -150,7 +145,6 @@ router.get('/', async (req, res, next) => {
       where.volume = { in: vols.map(Number) };
     }
 
-    // --- строковые «старые» чек-боксы
     const multi = (field, value) => {
       if (!value) return;
       where[field] = {
@@ -159,6 +153,7 @@ router.get('/', async (req, res, next) => {
       };
     };
 
+    /* чек-боксы */
     multi('brand',           brand);
     multi('wineColor',       wineColor);
     multi('sweetnessLevel',  sweetnessLevel);
@@ -166,24 +161,28 @@ router.get('/', async (req, res, next) => {
     multi('giftPackaging',   giftPackaging);
     multi('excerpt',         excerpt);
     multi('taste',           taste);
-
-    // --- НОВЫЕ чек-боксы
     multi('countryOfOrigin', countryOfOrigin);
     multi('whiskyType',      whiskyType);
 
-    /* 3) сортировка -------------------------------------------------------- */
-    const orderBy =
-      sort === 'name_asc'   ? { name: 'asc' }  :
-      sort === 'price_asc'  ? { basePrice: 'asc' }  :
-      sort === 'price_desc' ? { basePrice: 'desc' } :
-      sort === 'degree_asc' ? { degree: 'asc' } :
-      sort === 'degree_desc'? { degree: 'desc' } :
+    /* ────────── ORDER BY --------------------------------------------------- */
+    const orderBySpecific =
+      sort === 'name_asc'    ? { name: 'asc' }  :
+      sort === 'price_asc'   ? { basePrice: 'asc' }  :
+      sort === 'price_desc'  ? { basePrice: 'desc' } :
+      sort === 'degree_asc'  ? { degree: 'asc' } :
+      sort === 'degree_desc' ? { degree: 'desc' } :
       undefined;
 
-    /* 4) запрос ------------------------------------------------------------ */
+    /* ────────── запрос ----------------------------------------------------- */
     const products = await prisma.product.findMany({
       where,
-      orderBy,
+      orderBy: [
+        // чтобы порядок был детерминированным, id ставим последним
+        ...(orderBySpecific ? [orderBySpecific] : []),
+        { id: 'asc' },
+      ],
+      take: +limit,
+      ...(cursor ? { skip: 1, cursor: { id: +cursor } } : {}),
       include: {
         promos: {
           where: { expiresAt: { gt: new Date() } },
@@ -191,27 +190,18 @@ router.get('/', async (req, res, next) => {
       },
     });
 
-    /* 5) модифицируем цены -------------------------------------------------- */
-    const result = products.map(p => {
-      const modifiedBase = p.nonModify
-        ? p.basePrice
-        : +(p.basePrice * factor).toFixed(2);
+    /* ────────── модифицируем цены ----------------------------------------- */
+    const items = products.map(p => applyPriceModifier(p, factor));
 
-      const modifiedPromos = p.promos.map(pr => ({
-        ...pr,
-        promoPrice: p.nonModify
-          ? pr.promoPrice
-          : +(pr.promoPrice * factor).toFixed(2),
-      }));
+    /* ────────── курсор следующей страницы --------------------------------- */
+    const nextCursor = items.length === +limit ? items.at(-1).id : null;
 
-      return { ...p, basePrice: modifiedBase, promos: modifiedPromos };
-    });
-
-    res.json(result);
+    res.json({ items, nextCursor });
   } catch (err) {
     next(err);
   }
 });
+
 
 /* ------------------------------------------------------------------
    GET /products/:id
