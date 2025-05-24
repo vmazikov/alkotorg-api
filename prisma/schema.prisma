@@ -34,6 +34,7 @@ model User {
   orders       Order[]
   createdAt    DateTime @default(now())
   favorites    Favorite[]
+  priceSyncLogs PriceSyncLog[] 
 }
 
 model Store {
@@ -89,6 +90,22 @@ model Product {
   cartItems     CartItem[]
   createdAt     DateTime  @default(now())
   favoritedBy   Favorite[] 
+
+  isNew       Boolean   @default(true)     // ← новинка
+  dateAdded   DateTime  @default(now())    // ← когда завели
+
+  @@index([isNew])                          // для выборки «новинки»
+}
+
+model PriceSyncLog {
+  id           Int      @id @default(autoincrement())
+  syncedAt     DateTime @default(now())
+  priceChanged Int
+  stockChanged Int
+  added        Int
+  unarchived   Int
+  userId       Int
+  user         User     @relation(fields: [userId], references: [id])
 }
 
 model Promo {
