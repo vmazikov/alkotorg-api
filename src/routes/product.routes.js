@@ -1,12 +1,103 @@
 // src/routes/product.routes.js
 import { Router } from 'express';
 import prisma from '../utils/prisma.js';
+import { Prisma } from '@prisma/client'; 
 import { authMiddleware } from '../middlewares/auth.js';
 
 const router = Router();
 
 // Подключаем аутентификацию, чтобы в req.user был текущий пользователь
 router.use(authMiddleware);
+
+/* ───────── helpers — объявляем ПЕРЕД маршрутами ───────── */
+
+async function getUserFactor(userId) {
+  const u = await prisma.user.findUnique({
+    where : { id: userId },
+    select: { priceModifier: true },
+  });
+  return 1 + (u?.priceModifier ?? 0) / 100;
+}
+
+function applyPriceModifier(product, factor) {
+  const fix = n => +n.toFixed(2);
+
+  const basePrice = product.nonModify
+    ? product.basePrice
+    : fix(product.basePrice * factor);
+
+  const promos = product.promos?.map(pr => ({
+    ...pr,
+    promoPrice: product.nonModify ? pr.promoPrice : fix(pr.promoPrice * factor),
+  })) ?? [];
+
+  return { ...product, basePrice, promos };
+}
+/* ------------------------------------------------------------------
+   GET /products/suggest?query=...
+-------------------------------------------------------------------*/
+
+
+router.get('/suggest', async (req, res, next) => {
+  try {
+    const { query } = req.query;
+    if (!query || query.length < 2) return res.json([]);
+
+    const rows = await prisma.$queryRaw`
+      SELECT id, name, type, "countryOfOrigin"
+      FROM "Product"
+      WHERE name ILIKE ${'%' + query + '%'}
+      ORDER BY POSITION(LOWER(${query}) IN LOWER(name))
+      LIMIT 5
+    `;
+    res.json(rows);
+  } catch (e) { next(e); }
+});
+
+router.get('/search', async (req, res, next) => {
+  try {
+    const { query } = req.query;
+    if (!query || query.length < 2) return res.json([]);
+
+    /* точные id ------------------------------------------------------ */
+    const exactIds = await prisma.product.findMany({
+      where : { name:{ contains:query, mode:'insensitive'} },
+      select: { id:true },
+      take  : 50,
+    }).then(r => r.map(x => x.id));
+
+    /* похожие id ----------------------------------------------------- */
+    const exclude = exactIds.length
+      ? Prisma.sql`AND id NOT IN (${Prisma.join(exactIds)})`
+      : Prisma.empty;
+
+    const similarIds = await prisma.$queryRaw`
+      SELECT id
+      FROM "Product"
+      WHERE similarity(name, ${query}) > 0.3
+        ${exclude}
+      ORDER BY similarity(name, ${query}) DESC
+      LIMIT 50
+    `.then(r => r.map(x => x.id));
+
+    const ids = [...exactIds, ...similarIds];
+    if (!ids.length) return res.json([]);
+
+    /* полные карточки + модификатор ------------------------------- */
+    const factor   = await getUserFactor(req.user.id);
+    const products = await prisma.product.findMany({
+      where  : { id:{ in: ids } },
+      include: { promos:{ where:{ expiresAt:{ gt:new Date() } } } },
+    });
+
+    const map = Object.fromEntries(
+      products.map(p => [p.id, applyPriceModifier(p, factor)])
+    );
+
+    res.json(ids.map(id => map[id]));
+  } catch (e) { next(e); }
+});
+
 
 /* ------------------------------------------------------------------
    GET /products
@@ -199,24 +290,6 @@ router.get('/:id', async (req, res, next) => {
   }
 });
 
-/* ------------------------------------------------------------------
-   GET /products/suggest?query=...
--------------------------------------------------------------------*/
-router.get('/suggest', async (req, res, next) => {
-  try {
-    const { query } = req.query;
-    if (!query || query.length < 2) return res.json([]);
 
-    const list = await prisma.product.findMany({
-      where:  { name: { contains: query, mode: 'insensitive' } },
-      select: { name: true },
-      take:   10,
-    });
-
-    res.json(list.map(x => x.name));
-  } catch (err) {
-    next(err);
-  }
-});
 
 export default router;

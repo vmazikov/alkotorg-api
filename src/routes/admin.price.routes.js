@@ -99,6 +99,12 @@ function mapRow(r) {
   const name          = r.ProductName || r.name || '';
   const brand         = r.brand       || null;
   const type          = r.Type        || null;
+  const isArchived = (() => {
+    const v = r.isArchived;
+    if (typeof v === 'boolean') return v;
+    if (typeof v === 'string')  return v.trim().toLowerCase() === 'true';
+    return false;
+  })();
 
   const volume        = toFloat(r.Volume);
   const degree        = toFloat(r.degree);
@@ -152,6 +158,7 @@ function mapRow(r) {
     name,
     brand,
     type,
+    isArchived,
     volume,
     degree,
     quantityInBox,
