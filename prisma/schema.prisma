@@ -33,6 +33,7 @@ model User {
 
   orders       Order[]
   createdAt    DateTime @default(now())
+  favorites    Favorite[]
 }
 
 model Store {
@@ -87,6 +88,7 @@ model Product {
   orderItems    OrderItem[]
   cartItems     CartItem[]
   createdAt     DateTime  @default(now())
+  favoritedBy   Favorite[] 
 }
 
 model Promo {
@@ -96,6 +98,20 @@ model Promo {
   promoPrice Float
   comment    String?
   expiresAt  DateTime
+}
+
+model Favorite {
+  id        Int     @id @default(autoincrement())
+  userId    Int
+  productId Int
+
+  user      User    @relation(fields: [userId],    references: [id])
+  product   Product @relation(fields: [productId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@unique([userId, productId])        // один товар один раз
+  @@index([productId])
 }
 
 model Order {

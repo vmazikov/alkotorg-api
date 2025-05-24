@@ -15,6 +15,7 @@ import adminRoutes       from './routes/admin.routes.js';
 import cartRoutes        from './routes/cart.routes.js';
 import storeRoutes       from './routes/store.routes.js';
 import filtersRouter     from './routes/filters.routes.js';
+import favoriteRoutes from './routes/favorite.routes.js';
 
 import { authMiddleware } from './middlewares/auth.js';
 
@@ -67,6 +68,7 @@ app.use('/filters', filtersRouter);
 app.use('/orders', authMiddleware, orderRoutes);
 app.use('/cart',   authMiddleware, cartRoutes);
 app.use('/stores', authMiddleware, storeRoutes);
+app.use('/favorites', favoriteRoutes);
 
 
 // ─── Admin routes ────────────────────────────────────────────────────
