@@ -91,7 +91,7 @@ model Product {
   createdAt     DateTime  @default(now())
   favoritedBy   Favorite[] 
 
-  isNew       Boolean   @default(true)     // ← новинка
+  isNew       Boolean   @default(false)     // ← новинка
   dateAdded   DateTime  @default(now())    // ← когда завели
 
   @@index([isNew])                          // для выборки «новинки»
