@@ -4,6 +4,7 @@ import prisma from '../utils/prisma.js';
 import { Prisma } from '@prisma/client'; 
 import { authMiddleware } from '../middlewares/auth.js';
 import buildWhere from '../utils/buildWhere.js';   // ← добавили
+import { makeNextCursor, buildWhereAfter } from '../utils/buildNextCursor.js';
 
 const router = Router();
 
@@ -173,28 +174,30 @@ router.get('/', async (req, res, next) => {
       sort === 'degree_desc' ? { degree: 'desc' } :
       undefined;
 
-    /* ────────── запрос ----------------------------------------------------- */
-    const products = await prisma.product.findMany({
-      where,
-      orderBy: [
-        // чтобы порядок был детерминированным, id ставим последним
-        ...(orderBySpecific ? [orderBySpecific] : []),
-        { id: 'asc' },
-      ],
-      take: +limit,
-      ...(cursor ? { skip: 1, cursor: { id: +cursor } } : {}),
-      include: {
-        promos: {
-          where: { expiresAt: { gt: new Date() } },
+      /* ---------- key-set pagination ---------- */
+      let cursorObj = null;
+      try { if (cursor) cursorObj = JSON.parse(cursor); } catch { cursorObj = null; }
+      const afterWhere = buildWhereAfter(cursorObj, sort, Prisma);
+
+      const products = await prisma.product.findMany({
+        where: { ...where, ...afterWhere },
+        orderBy: [
+          ...(orderBySpecific ? [orderBySpecific] : []),
+          { id: 'asc' },
+        ],
+        take: +limit,
+        include: {
+          promos: { where: { expiresAt: { gt: new Date() } } },
         },
-      },
-    });
+      });
 
     /* ────────── модифицируем цены ----------------------------------------- */
     const items = products.map(p => applyPriceModifier(p, factor));
 
     /* ────────── курсор следующей страницы --------------------------------- */
-    const nextCursor = items.length === +limit ? items.at(-1).id : null;
+      const nextCursor = items.length === +limit
+    ? makeNextCursor(items.at(-1), sort)
+    : null;
 
     res.json({ items, nextCursor });
   } catch (err) {

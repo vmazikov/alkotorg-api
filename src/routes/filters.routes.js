@@ -2,6 +2,7 @@
 import { Router }   from 'express';
 import prisma       from '../utils/prisma.js';
 import buildWhere   from '../utils/buildWhere.js';
+import buildCursor from '../utils/buildCursor.js';
 
 const router = Router();
 
