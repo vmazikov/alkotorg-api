@@ -195,10 +195,13 @@ router.get('/', async (req, res, next) => {
     const items = products.map(p => applyPriceModifier(p, factor));
 
     /* ────────── курсор следующей страницы --------------------------------- */
-      const nextCursor = items.length === +limit
-    ? makeNextCursor(items.at(-1), sort)
-    : null;
-
+    // если есть следующая страница — сериализуем курсор в JSON
+    const nextCursorObj = items.length === +limit
+      ? makeNextCursor(items.at(-1), sort)
+      : null;
+    const nextCursor = nextCursorObj
+      ? JSON.stringify(nextCursorObj)
+      : null;
     res.json({ items, nextCursor });
   } catch (err) {
     next(err);
