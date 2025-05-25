@@ -176,7 +176,15 @@ router.get('/', async (req, res, next) => {
 
       /* ---------- key-set pagination ---------- */
       let cursorObj = null;
-      try { if (cursor) cursorObj = JSON.parse(cursor); } catch { cursorObj = null; }
+      try { 
+        if (cursor) cursorObj = JSON.parse(cursor); 
+        if (cursorObj?.id)       cursorObj.id       = +cursorObj.id;
+        if (cursorObj?.degree)   cursorObj.degree   = +cursorObj.degree;
+        if (cursorObj?.basePrice)cursorObj.basePrice= +cursorObj.basePrice;
+        if (cursorObj?.name)     cursorObj.name     = String(cursorObj.name); // на всяк.
+      } catch { 
+        cursorObj = null; 
+      }
       const afterWhere = buildWhereAfter(cursorObj, sort, Prisma);
 
       const products = await prisma.product.findMany({
