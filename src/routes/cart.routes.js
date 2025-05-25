@@ -75,6 +75,8 @@ router.get('/', async (req, res, next) => {
         name      : p.name,
         volume    : p.volume,
         degree    : p.degree,
+        img       : p.img,          // ① картинка
+        article   : p.article,      // ② если нужен артикул
         qty,
         price,                              // цена за штуку уже с модификатором
         totalItem : + (price * qty).toFixed(2)
