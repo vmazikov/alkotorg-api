@@ -40,7 +40,8 @@ app.get('/img/*', (_, res) =>
 app.use(cors({
   origin: [
     'http://localhost:5173',
-    'https://6649-79-127-249-103.ngrok-free.app'
+    'http://tk-alcotorg.ru',
+    'https://tk-alcotorg.ru'
   ],
   credentials: true,
 }));
