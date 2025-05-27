@@ -296,7 +296,6 @@ router.get('/:id', async (req, res, next) => {
       promos:         modifiedPromos,
       createdAt:      p.createdAt,
     };
-    console.log('product', product);
     res.json(product);
   } catch (err) {
     next(err);
