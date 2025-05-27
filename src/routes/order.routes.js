@@ -103,7 +103,7 @@ router.post('/', async (req, res, next) => {
     // 5) Уведомляем Telegram-агента покупателя
     const tg = order.store.user.agent?.telegramId;
     if (tg) {
-      const link = `https://your-frontend.com/orders/${order.id}`;
+      const link = `https://tk-alcotorg.ru/orders/${order.id}`;
       const text =
         `🆕 Новый заказ #${order.id}\n` +
         `Покупатель: ${order.user.fullName}\n` +
