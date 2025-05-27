@@ -7,39 +7,33 @@ import { notifyAgent }    from '../utils/teleg.js';
 const router = Router();
 router.use(authMiddleware);
 
-/**
- * POST /orders
- * Создать новый заказ:
- * – рассчитывает цены с promo и priceModifier (кроме nonModify)
- * – сохраняет его и возвращает
- * – уведомляет Telegram-агента покупателя (если он привязан)
- */
+/* ------------------------------------------------------------------
+   POST /orders
+   Создать заказ, посчитать цены и оповестить Telegram-агента
+-------------------------------------------------------------------*/
 router.post('/', async (req, res, next) => {
   try {
     const { storeId, items } = req.body;
-    if (!storeId || !Array.isArray(items) || items.length === 0) {
+    if (!storeId || !Array.isArray(items) || !items.length) {
       return res
         .status(400)
         .json({ error: 'storeId и непустой массив items обязательны' });
     }
 
-    // 1) Получаем у покупателя priceModifier и telegramId его агента
+    /* 1. priceModifier (для USER / MANAGER) и telegramId агента */
     const customer = await prisma.user.findUnique({
       where: { id: req.user.id },
       select: {
         priceModifier: true,
-        agent: {
-          select: { telegramId: true }
-        }
-      }
+        agent: { select: { telegramId: true } },
+      },
     });
-    if (!customer) {
-      return res.status(404).json({ error: 'Покупатель не найден' });
-    }
-    const factor = 1 + (customer.priceModifier / 100);
+    if (!customer) return res.status(404).json({ error: 'Покупатель не найден' });
 
-    // 2) Загружаем все нужные продукты
-    const productIds = items.map(i => i.productId);
+    const factor = 1 + customer.priceModifier / 100;
+
+    /* 2. нужные продукты */
+    const productIds = items.map((i) => i.productId);
     const products = await prisma.product.findMany({
       where: { id: { in: productIds } },
       select: {
@@ -49,58 +43,55 @@ router.post('/', async (req, res, next) => {
         promos: {
           where: { expiresAt: { gt: new Date() } },
           orderBy: { expiresAt: 'desc' },
-          take: 1
-        }
-      }
+          take: 1,
+        },
+      },
     });
 
-    // 3) Считаем итог и формируем позиции для вложенного create
+    /* 3. позиции заказа */
     let total = 0;
     const createItems = items.map(({ productId, qty }) => {
-      const p = products.find(x => x.id === productId);
+      const p = products.find((x) => x.id === productId);
       if (!p) throw new Error(`Product ${productId} not found`);
 
-      const raw = p.promos.length ? p.promos[0].promoPrice : p.basePrice;
+      const raw   = p.promos.length ? p.promos[0].promoPrice : p.basePrice;
       const price = p.nonModify ? raw : +((raw * factor).toFixed(2));
       total += price * qty;
       return { productId, quantity: qty, price };
     });
     total = +total.toFixed(2);
 
-    // 4) Создаем заказ вместе с позициями, включая вложенные данные
+    /* 4. создаём заказ */
     const order = await prisma.order.create({
       data: {
         storeId: +storeId,
-        userId:  req.user.id,
+        userId:  req.user.id,   // кто оформил
         total,
-        items: { create: createItems }
+        items: { create: createItems },
       },
       include: {
-        user: { select: { login: true, fullName: true } },
+        user:  { select: { login: true, fullName: true } },
         store: {
           select: {
             title: true,
             user: {
               select: {
+                id: true,
+                fullName: true,
                 agent: {
-                  select: { login: true, fullName: true, telegramId: true }
+                  select: { login: true, fullName: true, telegramId: true },
                 },
-                fullName: true
-              }
-            }
-          }
+              },
+            },
+          },
         },
         items: {
-          include: {
-            product: { select: { name: true, volume: true } }
-          }
-        }
-      }
+          include: { product: { select: { name: true, volume: true } } },
+        },
+      },
     });
 
-    console.log('🆕 New order created:', order);
-
-    // 5) Уведомляем Telegram-агента покупателя
+    /* 5. Telegram-уведомление агенту */
     const tg = order.store.user.agent?.telegramId;
     if (tg) {
       const link = `https://tk-alcotorg.ru/orders/${order.id}`;
@@ -113,21 +104,20 @@ router.post('/', async (req, res, next) => {
       await notifyAgent(tg, text);
     }
 
-    return res.status(201).json(order);
+    res.status(201).json(order);
   } catch (err) {
     next(err);
   }
 });
 
-/**
- * GET /orders?status=[NEW|DONE]
- * Список заказов с учётом роли:
- * – AGENT   → заказы клиентов (user.agentId === agent.id)
- * – USER    → свои заказы (order.userId)
- * – MANAGER → заказы в его магазинах (store.managerId)
- * – ADMIN   → все
- * Можно опционально фильтровать по статусу.
- */
+/* ------------------------------------------------------------------
+   GET /orders?status=[NEW|DONE]
+   Видимость:
+   • AGENT   → заказы клиентов (user.agentId = agent.id)
+   • USER    → все заказы магазинов, которыми он владеет (store.userId)
+   • MANAGER → заказы магазинов, где он менеджер (store.managerId)
+   • ADMIN   → все
+-------------------------------------------------------------------*/
 router.get('/', async (req, res, next) => {
   try {
     const { status } = req.query;
@@ -137,11 +127,11 @@ router.get('/', async (req, res, next) => {
     if (role === 'AGENT') {
       where.user = { agentId: userId };
     } else if (role === 'USER') {
-      where.userId = userId;
+      where.store = { userId };
     } else if (role === 'MANAGER') {
       where.store = { managerId: userId };
     }
-    if (status && ['NEW','DONE'].includes(status)) {
+    if (status && ['NEW', 'DONE'].includes(status)) {
       where.status = status;
     }
 
@@ -154,22 +144,16 @@ router.get('/', async (req, res, next) => {
             title: true,
             user: {
               select: {
-                agent: {
-                  select: { login: true, fullName: true }
-                }
-              }
-            }
-          }
+                agent: { select: { login: true, fullName: true } },
+              },
+            },
+          },
         },
         items: {
-          include: {
-            product: {
-              select: { name: true, volume: true }
-            }
-          }
-        }
+          include: { product: { select: { name: true, volume: true } } },
+        },
       },
-      orderBy: { createdAt: 'desc' }
+      orderBy: { createdAt: 'desc' },
     });
 
     res.json(orders);
@@ -178,55 +162,57 @@ router.get('/', async (req, res, next) => {
   }
 });
 
-/**
- * GET /orders/:id
- * Детализация одного заказа
- */
+/* ------------------------------------------------------------------
+   GET /orders/:id
+   Та же логика доступа, но к одному заказу
+-------------------------------------------------------------------*/
 router.get('/:id', async (req, res, next) => {
   try {
     const order = await prisma.order.findUnique({
       where: { id: +req.params.id },
       include: {
-        user:  { select: { login: true, fullName: true } },
+        user:  { select: { login: true, fullName: true, agentId: true } },
         store: {
           select: {
             title: true,
-            user: {
-              select: {
-                agent: { select: { login: true, fullName: true } }
-              }
-            }
-          }
+            user:   { select: { id: true } },
+            managerId: true,
+          },
         },
         items: {
-          include: {
-            product: { select: { name: true, volume: true } }
-          }
-        }
-      }
+          include: { product: { select: { name: true, volume: true } } },
+        },
+      },
     });
-    if (!order) {
-      return res.status(404).json({ error: 'Not found' });
-    }
+    if (!order) return res.status(404).json({ error: 'Not found' });
+
+    const { role, id: userId } = req.user;
+    const isAllowed =
+      role === 'ADMIN' ||
+      (role === 'AGENT'   && order.user.agentId === userId) ||
+      (role === 'USER'    && order.store.user.id === userId) ||
+      (role === 'MANAGER' && order.store.managerId === userId);
+
+    if (!isAllowed) return res.status(403).json({ error: 'Нет доступа' });
+
     res.json(order);
   } catch (err) {
     next(err);
   }
 });
 
-/**
- * PUT /orders/:id/status
- * Смена статуса заказа и запись agentComment (AGENT и ADMIN)
- */
+/* ------------------------------------------------------------------
+   PUT /orders/:id/status   (AGENT и ADMIN)
+-------------------------------------------------------------------*/
 router.put('/:id/status', async (req, res, next) => {
   try {
     const { status, comment = '' } = req.body;
-    if (!['NEW','DONE'].includes(status)) {
+    if (!['NEW', 'DONE'].includes(status)) {
       return res.status(400).json({ error: 'Недопустимый статус' });
     }
     const updated = await prisma.order.update({
       where: { id: +req.params.id },
-      data: { status, agentComment: comment }
+      data: { status, agentComment: comment },
     });
     res.json(updated);
   } catch (err) {
@@ -234,26 +220,17 @@ router.put('/:id/status', async (req, res, next) => {
   }
 });
 
-/**
- * DELETE /orders/:id
- * Удалить заказ — доступно только ADMIN
- */
-// DELETE /orders/:id
+/* ------------------------------------------------------------------
+   DELETE /orders/:id      (только ADMIN)
+-------------------------------------------------------------------*/
 router.delete('/:id', async (req, res, next) => {
   try {
-    const id = Number(req.params.id);
-    // только ADMIN
+    const id = +req.params.id;
     if (req.user.role !== 'ADMIN') {
       return res.status(403).json({ error: 'Нет доступа' });
     }
-    // сначала удаляем все OrderItem
-    await prisma.orderItem.deleteMany({
-      where: { orderId: id }
-    });
-    // потом сам заказ
-    await prisma.order.delete({
-      where: { id }
-    });
+    await prisma.orderItem.deleteMany({ where: { orderId: id } });
+    await prisma.order.delete({ where: { id } });
     res.sendStatus(204);
   } catch (err) {
     next(err);
