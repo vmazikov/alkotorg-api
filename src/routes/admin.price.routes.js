@@ -25,13 +25,32 @@ router.post(
     const wb    = xlsx.readFile(req.file.path);
     const rows  = xlsx.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
 
+    /* ---- helpers для нормализации заголовков ---- */
+    function normalizeKey(k) {
+      return k
+        .replace(/\u00A0/g, ' ')   // NBSP → пробел
+        .replace(/\s+/g, '')       // убрать все пробелы/табуляции
+        .toLowerCase();            // регистр не важен
+    }
+
+    function cleanRowKeys(row) {
+      const out = {};
+      for (const [k, v] of Object.entries(row)) {
+        out[normalizeKey(k)] = v;
+      }
+      return out;
+    }
+
+
     if (mode === 'full') {
       await prisma.product.updateMany({ data: { isArchived: true } });
     }
 
     let added = 0, updated = 0, archived = 0, skipped = 0;
-    for (const r of rows) {
-      const data = mapRow(r);
+    for (const raw of rows) {
+      const r = cleanRowKeys(raw);     // ← нормализовали ключи
+
+      const data = mapRow(r);        // mapRow теперь работает со «чистыми» ключами
       const uniqueWhere = data.productId
         ? { productId: data.productId }
         : data.article
@@ -46,6 +65,7 @@ router.post(
         stock:     data.stock,
         isArchived:false,
       };
+      if (data.productVolumeId != null) baseUpdate.productVolumeId = data.productVolumeId;
       if (data.countryOfOrigin != null) baseUpdate.countryOfOrigin = data.countryOfOrigin;
       if (data.whiskyType      != null) baseUpdate.whiskyType      = data.whiskyType;
 
@@ -215,49 +235,58 @@ export default router;
 
 /** ─────────────────── HELPERS for Excel ─────────────────── **/
 function mapRow(r) {
-  const productId = r.ProductID ? String(r.ProductID) : null;
-  const article   = r.Article   ? String(r.Article)   : null;
-  const name      = r.ProductName || r.name || '';
-  const brand     = r.brand       || null;
-  const type      = r.Type        || null;
-  const isArchived = (() => {
-    const v = r.isArchived;
-    if (typeof v === 'boolean') return v;
-    if (typeof v === 'string')  return v.trim().toLowerCase() === 'true';
-    return false;
-  })();
-  const volume        = toFloat(r.Volume);
+  // ключи уже в нижнем регистре и без пробелов
+  const productId = r.productid ?? null;
+  const article   = r.article   ?? null;
+  const name      = r.name ?? r.productname ?? '';
+
+  /* volume-id: число или строка → приводим к строке */
+  const productVolumeIdRaw = r.productvolumeid ?? null;
+  const productVolumeId =
+        productVolumeIdRaw != null && productVolumeIdRaw !== ''
+          ? String(productVolumeIdRaw).trim()
+          : null;
+  const brand     = r.brand     ?? null;
+  const type      = r.type      ?? null;
+
+  const isArchived = String(r.isarchived || '')
+                      .trim().toLowerCase() === 'true';
+
+  const volume        = toFloat(r.volume);
   const degree        = toFloat(r.degree);
-  const quantityInBox = toInt(r.QuantityInBox);
-  const basePrice     = toFloat(r.BasePrice);
-  const stock         = toInt(r.VolumeInStock);
-  const countryOfOrigin = r.CountryOfOrigin || r.Country || r.countryOfOrigin || null;
-  const whiskyType      = r.WhiskyType      || r.whiskyType || null;
-  const nonModify = (() => {
-    const v = r.nonModify;
-    if (typeof v === 'boolean') return v;
-    if (typeof v === 'string')  return v.toLowerCase() === 'true';
-    return false;
-  })();
-  const imgPath = r.newImg
-    ? String(r.newImg).trim()
-    : r.img
-      ? String(r.img).trim()
-      : null;
-  const wineColor      = r.WineColor      || null;
-  const sweetnessLevel = r.SweetnessLevel || null;
-  const wineType       = r.wineType       || null;
-  const giftPackaging  = r.giftPackaging  || null;
-  const manufacturer   = r.Manufacturer   || null;
-  const excerpt        = r.Excerpt        || null;
-  const rawMaterials   = r.rawMaterials   || null;
-  const taste          = r.taste          || null;
-  const description    = r.description    || null;
-  const promo = r.promoPrice
+  const quantityInBox = toInt(r.quantityinbox);
+  const basePrice     = toFloat(r.baseprice);
+  const stock         = toInt(r.volumeinstock);
+
+  const countryOfOrigin = r.countryoforigin ?? r.country ?? null;
+  const region          = r.region          ?? null;
+  const whiskyType      = r.whiskytype      ?? null;
+
+  const nonModify = String(r.nonmodify || '')
+                     .trim().toLowerCase() === 'true';
+
+  const imgPath = r.newimg ?? r.img ?? null;
+
+  /* дегустационка и прочее */
+  const wineColor      = r.winecolor      ?? null;
+  const sweetnessLevel = r.sweetnesslevel ?? null;
+  const wineType       = r.winetype       ?? null;
+  const giftPackaging  = r.giftpackaging  ?? null;
+  const manufacturer   = r.manufacturer   ?? null;
+  const excerpt        = r.excerpt        ?? null;
+  const rawMaterials   = r.rawmaterials   ?? null;
+  const taste          = r.taste          ?? null;
+  const tasteProduct   = r.tasteproduct   ?? null;
+  const aromaProduct   = r.aromaproduct   ?? null;
+  const colorProduct   = r.colorproduct   ?? null;
+  const combinationsProduct = r.combinationsproduct ?? r.сombinationsproduct ?? null;
+  const description    = r.description    ?? null;
+
+  const promo = r.promoprice
     ? {
-        promoPrice: toFloat(r.promoPrice),
-        comment:    r.commentPromo || null,
-        expiresAt:  r.expiresAt ? new Date(r.expiresAt) : null,
+        promoPrice: toFloat(r.promoprice),
+        comment:    r.commentpromo ?? null,
+        expiresAt:  r.expiresat ? new Date(r.expiresat) : null,
       }
     : undefined;
 
@@ -269,6 +298,8 @@ function mapRow(r) {
     type,
     isArchived,
     volume,
+    productVolumeId,
+    region,
     degree,
     quantityInBox,
     basePrice,
@@ -285,7 +316,12 @@ function mapRow(r) {
     excerpt,
     rawMaterials,
     taste,
+    tasteProduct,
+    aromaProduct,
+    colorProduct,
+    сombinationsProduct: combinationsProduct,
     description,
     promo,
   };
 }
+

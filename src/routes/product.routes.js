@@ -263,6 +263,7 @@ router.get('/:id', async (req, res, next) => {
       brand:          p.brand,
       type:           p.type,
       volume:         p.volume,
+      productVolumeId: p.productVolumeId,
       degree:         p.degree,
       quantityInBox:  p.quantityInBox,
       basePrice:      modifiedBase,
@@ -282,17 +283,50 @@ router.get('/:id', async (req, res, next) => {
       excerpt:         p.excerpt,
       rawMaterials:    p.rawMaterials,
       taste:           p.taste,
+      tasteProduct:    p.tasteProduct,
+      aromaProduct:    p.aromaProduct,
+      colorProduct:    p.colorProduct,
+      combinationsProduct: p.сombinationsProduct,
+      region:          p.region,
+      whiskyType:      p.whiskyType,
+      excerpt:         p.excerpt,
+      isNew:           p.isNew,
       description:     p.description,
 
       promos:         modifiedPromos,
       createdAt:      p.createdAt,
     };
-
+    console.log('product', product);
     res.json(product);
   } catch (err) {
     next(err);
   }
 });
+
+/* ------------------------------------------------------------------
+   GET /products/volume/:productVolumeId
+   Возвращает все товары с тем же productVolumeId (кроме архивных)
+-------------------------------------------------------------------*/
+router.get('/volume/:volumeId', async (req, res, next) => {
+  try {
+  const volumeId = String(req.params.volumeId).trim(); // ✅ строка
+    if (!volumeId) return res.json([]);
+
+    const rows = await prisma.product.findMany({
+      where: {
+        productVolumeId: volumeId,
+        isArchived: false,
+      },
+      select: {
+        id: true, volume: true, stock: true, basePrice: true,
+      },
+      orderBy: { volume: 'asc' },
+    });
+
+    res.json(rows);
+  } catch (e) { next(e); }
+});
+
 
 
 
