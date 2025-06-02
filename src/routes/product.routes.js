@@ -217,6 +217,96 @@ router.get('/', async (req, res, next) => {
 });
 
 
+router.get('/:id/related', async (req, res, next) => {
+  try {
+    const prodId = Number(req.params.id);
+    const limit  = Number(req.query.limit ?? 10);
+
+    /* ────────────────── 1. базовый товар ────────────────── */
+    const base = await prisma.product.findUnique({
+      where : { id: prodId },
+      select: {
+        name: true,
+        brand: true,
+        type: true,
+        basePrice: true,
+        productVolumeId: true,
+      },
+    });
+    if (!base) return res.status(404).json({ error: 'Product not found' });
+
+    const {
+      name:            baseName,
+      brand:           baseBrand,      // может быть null
+      type:            baseType,       // может быть null
+      basePrice,
+      productVolumeId: baseVolId,      // может быть null
+    } = base;
+
+    /* ────────────────── 2. SQL-фрагменты для score ────────────────── */
+    const brandScore = baseBrand
+      ? Prisma.sql`(CASE WHEN p.brand ILIKE ${baseBrand} THEN 2 ELSE 0 END)`
+      : Prisma.sql`0`;
+
+    const typeScore = baseType
+      ? Prisma.sql`(CASE WHEN p.type ILIKE ${baseType} THEN 1 ELSE 0 END)`
+      : Prisma.sql`0`;
+
+    const volScore = baseVolId
+      ? Prisma.sql`(CASE WHEN p."productVolumeId" = ${baseVolId} THEN 1 ELSE 0 END)`
+      : Prisma.sql`0`;
+
+    const priceScore = Prisma.sql`
+      GREATEST(0, 1 - ABS(p."basePrice" - ${basePrice}) / 200.0)
+    `;                                                             // 0–1
+
+    const nameScore  = Prisma.sql`
+      similarity(p.name, ${baseName})
+    `;                                                             // 0–1
+
+    /* ────────────────── 3. выборка кандидатов x3 от лимита ────────────────── */
+    const candidates = await prisma.$queryRaw(
+      Prisma.sql`
+        SELECT
+          p.id,
+          (${brandScore} + ${typeScore} + ${volScore} +
+           ${priceScore} + ${nameScore}) AS score
+        FROM "Product" p
+        WHERE p."isArchived" = false
+          AND p.id <> ${prodId}
+        ORDER BY score DESC,
+                 ABS(p."basePrice" - ${basePrice}) ASC
+        LIMIT ${limit * 3}
+      `
+    );
+
+    if (!candidates.length) return res.json([]);
+
+    /* ────────────────── 4. карточки в исходном порядке ────────────────── */
+    const ids = candidates.map(c => c.id).slice(0, limit);
+
+    const products = await prisma.product.findMany({
+      where  : { id: { in: ids } },
+      include: { promos: { where: { expiresAt: { gt: new Date() } } } },
+    });
+
+    const byId   = new Map(products.map(p => [p.id, p]));
+    const sorted = ids.map(id => byId.get(id)).filter(Boolean);
+
+    /* ────────────────── 5. модификация цен под пользователя ────────────────── */
+    const factor   = await getUserFactor(req.user.id);
+    const related  = sorted.map(p => applyPriceModifier(p, factor));
+
+    res.json(related);
+  } catch (err) {
+    next(err);
+  }
+});
+
+
+
+
+
 /* ------------------------------------------------------------------
    GET /products/:id
 -------------------------------------------------------------------*/
