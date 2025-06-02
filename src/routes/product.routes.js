@@ -303,8 +303,113 @@ router.get('/:id/related', async (req, res, next) => {
   }
 });
 
+/* ------------------------------------------------------------------
+   ЛОГИКА «недавно смотрели / уже заказывали»
+   ──────────────────────────────────────────────────────────────────
+   POST /products/:id/view
+   GET  /products/recent?limit=10
+   GET  /products/ordered?limit=10&exclude=1,2,3
+-------------------------------------------------------------------*/
+/* ---------- 1. логируем просмотр товара ------------------------ */
+router.post('/:id/view', async (req, res, next) => {
+  try {
+    await prisma.productView.upsert({
+      where : {
+        userId_productId: {
+          userId:   req.user.id,
+          productId: +req.params.id,
+        },
+      },
+      create: { userId: req.user.id, productId: +req.params.id },
+      update: { viewedAt: new Date() },
+    });
+    res.json({ ok: true });
+  } catch (e) { next(e); }
+});
 
+/* ---------- 2. последние просмотренные ------------------------ */
+router.get('/recent', async (req, res, next) => {
+  try {
+    const limit = +(req.query.limit || 10);
 
+    /* берём id последних просмотренных товаров */
+    const rows = await prisma.productView.findMany({
+      where:  { userId: req.user.id },
+      orderBy:{ viewedAt: 'desc' },
+      take:    limit,
+      select: { productId: true },
+    });
+    const ids = rows.map(r => r.productId);
+    if (!ids.length) return res.json([]);
+
+    /* загружаем карточки в том же порядке */
+    const factor   = await getUserFactor(req.user.id);
+    const products = await prisma.product.findMany({
+      where: {
+        id: { in: ids },
+        isArchived: false,
+        stock: { gt: 0 },
+      },
+      include: {
+        promos: { where:{ expiresAt:{ gt:new Date() } } },
+      },
+    });
+
+    const byId = new Map(
+      products.map(p => [p.id, applyPriceModifier(p, factor)])
+    );
+    res.json(ids.map(id => byId.get(id)).filter(Boolean));
+  } catch (e) { next(e); }
+});
+
+/* ---------- 3. уже заказывали --------------------------------- */
+router.get('/ordered', async (req, res, next) => {
+  try {
+    const limit   = +(req.query.limit || 10);
+    const exclude = (req.query.exclude ?? '')
+      .split(',')
+      .map(Number)
+      .filter(Boolean);
+
+    /* уникальные productId + дата последнего заказа */
+    const orderedRows = await prisma.$queryRaw`
+      SELECT
+        oi."productId",
+        MAX(o."createdAt") AS last_order
+      FROM "OrderItem" oi
+      JOIN "Order"      o ON o.id = oi."orderId"
+      WHERE o."userId" = ${req.user.id}
+      GROUP BY oi."productId"
+      ORDER BY last_order DESC
+      LIMIT ${limit * 3}
+    `;
+    const orderedIds = orderedRows.map(r => r.productId);
+
+    /* убираем «что уже в корзине» или передали в exclude */
+    const ids = orderedIds
+      .filter(id => !exclude.includes(id))
+      .slice(0, limit);
+    if (!ids.length) return res.json([]);
+
+    /* карточки + модификатор цены */
+    const factor   = await getUserFactor(req.user.id);
+    const products = await prisma.product.findMany({
+      where: {
+        id: { in: ids },
+        isArchived: false,
+        stock: { gt: 0 },
+      },
+      include: {
+        promos: { where:{ expiresAt:{ gt:new Date() } } },
+      },
+    });
+
+    const byId = new Map(
+      products.map(p => [p.id, applyPriceModifier(p, factor)])
+    );
+    res.json(ids.map(id => byId.get(id)).filter(Boolean));
+  } catch (e) { next(e); }
+});
 
 
 /* ------------------------------------------------------------------
