@@ -41,6 +41,18 @@ function buildUpdateForFull(rowData) {
   return out;
 }
 
+function isEqual(a, b) {
+  return (a ?? null) === (b ?? null);
+}
+
+function dropUnchanged(patch, current) {
+  const out = {};
+  for (const [k, v] of Object.entries(patch)) {
+    if (!isEqual(v, current[k])) out[k] = v;
+  }
+  return out;
+}
+
 
 /** 
  * 1) Старый Excel-импорт без изменений 
@@ -53,8 +65,6 @@ router.post(
     const mode  = req.query.mode || 'update';
     const wb    = xlsx.readFile(req.file.path);
     const rows  = xlsx.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
-
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
 
     let added = 0, updated = 0, skipped = 0;
 
@@ -90,20 +100,40 @@ router.post(
       let product;
 
       if (mode === 'full') {
-        if (existing) {                                     // -------- UPDATE
-          const patch = buildUpdateForFull(data);           //  только whitelisted-поля
-          // Не трогаем promo / price / stock
-          product = await prisma.product.update({
-            where: uniqueWhere,
-            data : patch,
-          });
-          updated++;
-          res.write(JSON.stringify({ done: true, added, updated, skipped }) + '\n\n');
+        if (existing) {
+          // --- сравниваем ---
+          let patch = buildUpdateForFull(data);
+          patch = dropUnchanged(patch, existing);
+          // ещё проверяем isArchived
+          if (!isEqual(data.isArchived, existing.isArchived)) {
+            patch.isArchived = data.isArchived;
+          }
+
+          if (Object.keys(patch).length) {
+            await prisma.product.update({ where: uniqueWhere, data: patch });
+            updated++;
+          } else {
+            skipped++;          }
         } else {                                            // -------- CREATE
-          product = await prisma.product.create({ data });
-          added++;
-          skipped++;
-          res.write(JSON.stringify({ done: true, added, updated, skipped }) + '\n\n');
+          if (existing) {
+            const needPrice  = !isEqual(existing.basePrice, data.basePrice);
+            const needStock  = !isEqual(existing.stock,     data.stock);
+            if (needPrice || needStock) {
+              await prisma.product.update({
+                where: uniqueWhere,
+                data : {
+                  ...(needPrice && { basePrice: data.basePrice }),
+                  ...(needStock && { stock:     data.stock })
+                }
+              });
+              updated++;
+            } else {
+              skipped++;
+            }
+          } else {
+            await prisma.product.create({ data });
+            added++;
+          }
           /* promo сохраняем только при создании нового товара */
           if (data.promo) {
             await prisma.promo.create({
@@ -127,7 +157,6 @@ router.post(
           create: data,
         });
         existing ? updated++ : added++;
-        res.write(JSON.stringify({ done: true, added, updated, skipped }) + '\n\n');
 
         if (data.promo) {
           await prisma.promo.upsert({
@@ -136,11 +165,11 @@ router.post(
             create: { ...data.promo, product:{ connect:{ id:product.id } } },
           });
         }
-        res.write(JSON.stringify({ done: true, added, updated, skipped }) + '\n\n');
-
       } 
   }
-          res.end();
+  // сколько товаров сейчас в архиве — пригодится в UI
+  const archived = await prisma.product.count({ where:{ isArchived:true }})
+  return res.json({ added, updated, skipped, archived })
 });
 
 /** 

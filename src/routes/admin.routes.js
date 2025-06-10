@@ -8,6 +8,7 @@ import productsRouter    from './admin.product.routes.js'
 import priceRouter       from './admin.price.routes.js'
 import stockRulesRouter  from './admin.stockRules.routes.js'
 import promoRoutes       from './admin.promo.routes.js'
+import priceExportRouter from './admin.priceExport.routes.js'
 
 const router = Router()
 
@@ -51,11 +52,20 @@ router.use(
   stockRulesRouter
 )
 
+// /admin/export/* доступно только ADMIN
+router.use(
+  '/export',
+  role(['ADMIN']),
+  priceExportRouter
+)
+
 // /admin/promos/* доступно только ADMIN
 router.use(
   '/',
   role(['ADMIN']),
   promoRoutes
 )
+
+
 
 export default router
