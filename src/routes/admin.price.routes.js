@@ -275,6 +275,8 @@ function mapRow(r) {
   const manufacturer   = r.manufacturer   ?? null;
   const excerpt        = r.excerpt        ?? null;
   const rawMaterials   = r.rawmaterials   ?? null;
+  const spirtType      = r.taste          ?? null;
+  const bottleType     = r.taste          ?? null;
   const taste          = r.taste          ?? null;
   const tasteProduct   = r.tasteproduct   ?? null;
   const aromaProduct   = r.aromaproduct   ?? null;
@@ -316,6 +318,8 @@ function mapRow(r) {
     excerpt,
     rawMaterials,
     taste,
+    spirtType,
+    bottleType,
     tasteProduct,
     aromaProduct,
     colorProduct,
