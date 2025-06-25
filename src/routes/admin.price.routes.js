@@ -220,23 +220,39 @@ router.post(
 
     const extRows = loadExternalProducts(req.file.path);
 
-    /* --------- товары, отсутствующие во внешнем прайсе --------- */
-    const extIds = new Set(
-      extRows
-        .map(r => r.productId?.trim()?.toLowerCase())
-        .filter(Boolean)                 // убрали null / ''
-    );
+  /** helper: нормализуем id → "abcd1234…" или ''  */
+  const normId = id =>
+    (id || '')
+      .toString()
+      .toLowerCase()
+      .replace(/[^0-9a-f]/g, '');
+
+  /* --- соберём хэши внешнего прайса: и по id, и по article --- */
+  const extIdSet       = new Set();   // productId
+  const extArticleSet  = new Set();   // article  (может быть undefined)
+
+  for (const r of extRows) {
+    const id = normId(r.productId);
+    if (id)        extIdSet.add(id);
+    if (r.article) extArticleSet.add(r.article.trim().toLowerCase());
+  }
 
     // берём все активные продукты одной выборкой
-    const activeProducts = await prisma.product.findMany({
-      where: { isArchived: false },
-      select: { id: true, name: true, stock: true, productId: true }
-    });
+   const activeProducts = await prisma.product.findMany({
+     where: { isArchived: false },
+     select: { id: true, name: true, stock: true, productId: true, article: true }
+   });
 
-    const toArchive = activeProducts.filter(p => {
-      const id = p.productId?.trim()?.toLowerCase();      // может быть null
-      return !id || !extIds.has(id);                     // нет такого id во внешнем прайсе
-    });
+   const toArchive = activeProducts.filter(p => {
+     const id  = normId(p.productId);
+     const art = p.article?.trim()?.toLowerCase();
+
+     /* нет ни id, ни article во внешнем прайсе */
+     const idMissing  = !id  || !extIdSet.has(id);
+     const artMissing = !art || !extArticleSet.has(art);
+
+     return idMissing && artMissing;
+   });
 
     let priceChanged = 0, stockChanged = 0, skipped = 0;
     const toUnarchive = [], newCandidates = [];
