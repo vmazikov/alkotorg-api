@@ -140,6 +140,24 @@ router.post(
 
     const extRows = loadExternalProducts(req.file.path);
 
+    /* --------- товары, отсутствующие во внешнем прайсе --------- */
+    const extIds = new Set(
+      extRows
+        .map(r => r.productId?.trim()?.toLowerCase())
+        .filter(Boolean)                 // убрали null / ''
+    );
+
+    // берём все активные продукты одной выборкой
+    const activeProducts = await prisma.product.findMany({
+      where: { isArchived: false },
+      select: { id: true, name: true, stock: true, productId: true }
+    });
+
+    const toArchive = activeProducts.filter(p => {
+      const id = p.productId?.trim()?.toLowerCase();      // может быть null
+      return !id || !extIds.has(id);                     // нет такого id во внешнем прайсе
+    });
+
     let priceChanged = 0, stockChanged = 0, skipped = 0;
     const toUnarchive = [], newCandidates = [];
 
@@ -186,11 +204,14 @@ router.post(
       }
     }
 
-    return res.json({
-      preview,
-      priceChanged, stockChanged, skipped,
-      toUnarchive, newCandidates
-    });
+    const payload = {
+       preview,
+       priceChanged, stockChanged, skipped,
+       toUnarchive, newCandidates,
+       toArchive
+    };
+    if (preview) payload.toArchive = toArchive;
+    return res.json(payload);
   }
 );
 
@@ -228,6 +249,19 @@ router.post(
       skipDuplicates: true
     });
     res.json({ added: result.count });
+  }
+);
+
+router.post(
+  '/product/archive-bulk',
+  role(['ADMIN']),
+  async (req, res) => {
+    const ids = Array.isArray(req.body.ids) ? req.body.ids : [];
+    const result = await prisma.product.updateMany({
+      where: { id: { in: ids } },
+      data:  { isArchived: true }
+    });
+    res.json({ updated: result.count });
   }
 );
 
