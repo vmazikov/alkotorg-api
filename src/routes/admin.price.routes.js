@@ -355,7 +355,14 @@ router.post(
   '/product/archive-bulk',
   role(['ADMIN']),
   async (req, res) => {
-    const ids = Array.isArray(req.body.ids) ? req.body.ids : [];
+    // безопасно приводим к числу
+    const ids = Array.isArray(req.body.ids)
+      ? req.body.ids.map(n => Number(n)).filter(Number.isInteger)
+      : [];
+
+    // если список пустой – сразу отвечаем, чтобы не слать некорректный IN ()
+    if (!ids.length) return res.json({ updated: 0 });
+
     const result = await prisma.product.updateMany({
       where: { id: { in: ids } },
       data:  { isArchived: true }
