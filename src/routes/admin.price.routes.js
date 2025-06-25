@@ -13,6 +13,47 @@ const router   = Router();
 const upload   = multer({ dest: 'uploads/' });
 const dbUpload = multer({ dest: 'uploads/', limits: { fileSize: 5 * 1024 * 1024 } }); // 5 МБ
 
+/* ─────────────── utils для режима full ─────────────── */
+
+// Поля, которые МЫ МОЖЕМ менять при "полном" обновлении
+const MUTABLE_FIELDS_FULL = [
+  'article', 'name', 'brand', 'type', 'isArchived',
+  'volume', 'productVolumeId', 'region', 'degree', 'quantityInBox',
+  'nonModify', 'img', 'countryOfOrigin', 'whiskyType',
+  'wineColor', 'sweetnessLevel', 'wineType', 'giftPackaging',
+  'manufacturer', 'excerpt', 'rawMaterials',
+  'taste', 'spirtType', 'bottleType',
+  'tasteProduct', 'aromaProduct', 'colorProduct', 'сombinationsProduct',
+  'description'
+];
+
+/** Пустая строка из Excel → null, иначе возвращаем как есть */
+function toDbValue(v) {
+  return v === '' || v === undefined ? null : v;
+}
+
+/** Строит объект data: { поле1: значение1, … } для prisma.update */
+function buildUpdateForFull(rowData) {
+  const out = {};
+  for (const key of MUTABLE_FIELDS_FULL) {
+    if (key in rowData) out[key] = toDbValue(rowData[key]);
+  }
+  return out;
+}
+
+function isEqual(a, b) {
+  return (a ?? null) === (b ?? null);
+}
+
+function dropUnchanged(patch, current) {
+  const out = {};
+  for (const [k, v] of Object.entries(patch)) {
+    if (!isEqual(v, current[k])) out[k] = v;
+  }
+  return out;
+}
+
+
 /** 
  * 1) Старый Excel-импорт без изменений 
  */
@@ -24,6 +65,8 @@ router.post(
     const mode  = req.query.mode || 'update';
     const wb    = xlsx.readFile(req.file.path);
     const rows  = xlsx.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
+
+    let added = 0, updated = 0, skipped = 0;
 
     /* ---- helpers для нормализации заголовков ---- */
     function normalizeKey(k) {
@@ -41,12 +84,6 @@ router.post(
       return out;
     }
 
-
-    if (mode === 'full') {
-      await prisma.product.updateMany({ data: { isArchived: true } });
-    }
-
-    let added = 0, updated = 0, archived = 0, skipped = 0;
     for (const raw of rows) {
       const r = cleanRowKeys(raw);     // ← нормализовали ключи
 
@@ -60,37 +97,80 @@ router.post(
       const existing = await prisma.product.findUnique({ where: uniqueWhere });
       if (!existing && mode === 'update') { skipped++; continue; }
 
-      const baseUpdate = {
-        basePrice: data.basePrice,
-        stock:     data.stock,
-        isArchived:false,
-      };
-      if (data.productVolumeId != null) baseUpdate.productVolumeId = data.productVolumeId;
-      if (data.countryOfOrigin != null) baseUpdate.countryOfOrigin = data.countryOfOrigin;
-      if (data.whiskyType      != null) baseUpdate.whiskyType      = data.whiskyType;
+      let product;
 
-      const product = await prisma.product.upsert({
-        where:  uniqueWhere,
-        update: baseUpdate,
-        create: data,
-      });
-      existing ? updated++ : added++;
+      if (mode === 'full') {
+        if (existing) {
+          // --- сравниваем ---
+          let patch = buildUpdateForFull(data);
+          patch = dropUnchanged(patch, existing);
+          // ещё проверяем isArchived
+          if (!isEqual(data.isArchived, existing.isArchived)) {
+            patch.isArchived = data.isArchived;
+          }
 
-      if (data.promo) {
-        await prisma.promo.upsert({
-          where:  { productId: product.id },
-          update: data.promo,
-          create: { ...data.promo, product:{ connect:{ id:product.id } } },
+          if (Object.keys(patch).length) {
+            await prisma.product.update({ where: uniqueWhere, data: patch });
+            updated++;
+          } else {
+            skipped++;          }
+        } else {                                            // -------- CREATE
+          if (existing) {
+            const needPrice  = !isEqual(existing.basePrice, data.basePrice);
+            const needStock  = !isEqual(existing.stock,     data.stock);
+            if (needPrice || needStock) {
+              await prisma.product.update({
+                where: uniqueWhere,
+                data : {
+                  ...(needPrice && { basePrice: data.basePrice }),
+                  ...(needStock && { stock:     data.stock })
+                }
+              });
+              updated++;
+            } else {
+              skipped++;
+            }
+          } else {
+            await prisma.product.create({ data });
+            added++;
+          }
+          /* promo сохраняем только при создании нового товара */
+          if (data.promo) {
+            await prisma.promo.create({
+              data:{ ...data.promo, product:{ connect:{ id:product.id } } }
+            });
+          }
+        }
+      } else {
+        const baseUpdate = {
+          basePrice: data.basePrice,
+          stock:     data.stock,
+          isArchived:false,
+        };
+        if (data.productVolumeId != null) baseUpdate.productVolumeId = data.productVolumeId;
+        if (data.countryOfOrigin != null) baseUpdate.countryOfOrigin = data.countryOfOrigin;
+        if (data.whiskyType      != null) baseUpdate.whiskyType      = data.whiskyType;
+
+        product = await prisma.product.upsert({
+          where:  uniqueWhere,
+          update: baseUpdate,
+          create: data,
         });
-      }
-    }
-    if (mode === 'full') {
-      archived = await prisma.product.count({ where:{ isArchived:true }});
-    }
+        existing ? updated++ : added++;
 
-    res.json({ added, updated, archived, skipped });
+        if (data.promo) {
+          await prisma.promo.upsert({
+            where:  { productId: product.id },
+            update: data.promo,
+            create: { ...data.promo, product:{ connect:{ id:product.id } } },
+          });
+        }
+      } 
   }
-);
+  // сколько товаров сейчас в архиве — пригодится в UI
+  const archived = await prisma.product.count({ where:{ isArchived:true }})
+  return res.json({ added, updated, skipped, archived })
+});
 
 /** 
  * 2) Синхронизация из SQLite-файла с AES/ECB-дешифровкой 
@@ -222,7 +302,10 @@ router.post(
   '/product/unarchive-bulk',
   role(['ADMIN']),
   async (req, res) => {
-    const ids = Array.isArray(req.body.ids) ? req.body.ids : [];
+   // конвертируем всё, безопасно отфильтровываем NaN
+   const ids = Array.isArray(req.body.ids)
+     ? req.body.ids.map(id => Number(id)).filter(Number.isInteger)
+     : [];
     const result = await prisma.product.updateMany({
       where: { id: { in: ids } },
       data:  { isArchived: false }
@@ -309,6 +392,8 @@ function mapRow(r) {
   const manufacturer   = r.manufacturer   ?? null;
   const excerpt        = r.excerpt        ?? null;
   const rawMaterials   = r.rawmaterials   ?? null;
+  const spirtType      = r.spirtType      ?? null;
+  const bottleType     = r.bottletype     ?? null;
   const taste          = r.taste          ?? null;
   const tasteProduct   = r.tasteproduct   ?? null;
   const aromaProduct   = r.aromaproduct   ?? null;
@@ -350,6 +435,8 @@ function mapRow(r) {
     excerpt,
     rawMaterials,
     taste,
+    spirtType,
+    bottleType,
     tasteProduct,
     aromaProduct,
     colorProduct,

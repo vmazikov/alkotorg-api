@@ -217,6 +217,201 @@ router.get('/', async (req, res, next) => {
 });
 
 
+router.get('/:id/related', async (req, res, next) => {
+  try {
+    const prodId = Number(req.params.id);
+    const limit  = Number(req.query.limit ?? 10);
+
+    /* ────────────────── 1. базовый товар ────────────────── */
+    const base = await prisma.product.findUnique({
+      where : { id: prodId },
+      select: {
+        name: true,
+        brand: true,
+        type: true,
+        basePrice: true,
+        productVolumeId: true,
+      },
+    });
+    if (!base) return res.status(404).json({ error: 'Product not found' });
+
+    const {
+      name:            baseName,
+      brand:           baseBrand,      // может быть null
+      type:            baseType,       // может быть null
+      basePrice,
+      productVolumeId: baseVolId,      // может быть null
+    } = base;
+
+    /* ────────────────── 2. SQL-фрагменты для score ────────────────── */
+    const brandScore = baseBrand
+      ? Prisma.sql`(CASE WHEN p.brand ILIKE ${baseBrand} THEN 2 ELSE 0 END)`
+      : Prisma.sql`0`;
+
+    const typeScore = baseType
+      ? Prisma.sql`(CASE WHEN p.type ILIKE ${baseType} THEN 1 ELSE 0 END)`
+      : Prisma.sql`0`;
+
+    const volScore = baseVolId
+      ? Prisma.sql`(CASE WHEN p."productVolumeId" = ${baseVolId} THEN 1 ELSE 0 END)`
+      : Prisma.sql`0`;
+
+    const priceScore = Prisma.sql`
+      GREATEST(0, 1 - ABS(p."basePrice" - ${basePrice}) / 200.0)
+    `;                                                             // 0–1
+
+    const nameScore  = Prisma.sql`
+      similarity(p.name, ${baseName})
+    `;                                                             // 0–1
+
+    /* ────────────────── 3. выборка кандидатов x3 от лимита ────────────────── */
+    const candidates = await prisma.$queryRaw(
+      Prisma.sql`
+        SELECT
+          p.id,
+          (${brandScore} + ${typeScore} + ${volScore} +
+           ${priceScore} + ${nameScore}) AS score
+        FROM "Product" p
+        WHERE p."isArchived" = false
+          AND p.id <> ${prodId}
+        ORDER BY score DESC,
+                 ABS(p."basePrice" - ${basePrice}) ASC
+        LIMIT ${limit * 3}
+      `
+    );
+
+    if (!candidates.length) return res.json([]);
+
+    /* ────────────────── 4. карточки в исходном порядке ────────────────── */
+    const ids = candidates.map(c => c.id).slice(0, limit);
+
+    const products = await prisma.product.findMany({
+      where  : { id: { in: ids } },
+      include: { promos: { where: { expiresAt: { gt: new Date() } } } },
+    });
+
+    const byId   = new Map(products.map(p => [p.id, p]));
+    const sorted = ids.map(id => byId.get(id)).filter(Boolean);
+
+    /* ────────────────── 5. модификация цен под пользователя ────────────────── */
+    const factor   = await getUserFactor(req.user.id);
+    const related  = sorted.map(p => applyPriceModifier(p, factor));
+
+    res.json(related);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/* ------------------------------------------------------------------
+   ЛОГИКА «недавно смотрели / уже заказывали»
+   ──────────────────────────────────────────────────────────────────
+   POST /products/:id/view
+   GET  /products/recent?limit=10
+   GET  /products/ordered?limit=10&exclude=1,2,3
+-------------------------------------------------------------------*/
+/* ---------- 1. логируем просмотр товара ------------------------ */
+router.post('/:id/view', async (req, res, next) => {
+  try {
+    await prisma.productView.upsert({
+      where : {
+        userId_productId: {
+          userId:   req.user.id,
+          productId: +req.params.id,
+        },
+      },
+      create: { userId: req.user.id, productId: +req.params.id },
+      update: { viewedAt: new Date() },
+    });
+    res.json({ ok: true });
+  } catch (e) { next(e); }
+});
+
+/* ---------- 2. последние просмотренные ------------------------ */
+router.get('/recent', async (req, res, next) => {
+  try {
+    const limit = +(req.query.limit || 10);
+
+    /* берём id последних просмотренных товаров */
+    const rows = await prisma.productView.findMany({
+      where:  { userId: req.user.id },
+      orderBy:{ viewedAt: 'desc' },
+      take:    limit,
+      select: { productId: true },
+    });
+    const ids = rows.map(r => r.productId);
+    if (!ids.length) return res.json([]);
+
+    /* загружаем карточки в том же порядке */
+    const factor   = await getUserFactor(req.user.id);
+    const products = await prisma.product.findMany({
+      where: {
+        id: { in: ids },
+        isArchived: false,
+        stock: { gt: 0 },
+      },
+      include: {
+        promos: { where:{ expiresAt:{ gt:new Date() } } },
+      },
+    });
+
+    const byId = new Map(
+      products.map(p => [p.id, applyPriceModifier(p, factor)])
+    );
+    res.json(ids.map(id => byId.get(id)).filter(Boolean));
+  } catch (e) { next(e); }
+});
+
+/* ---------- 3. уже заказывали --------------------------------- */
+router.get('/ordered', async (req, res, next) => {
+  try {
+    const limit   = +(req.query.limit || 10);
+    const exclude = (req.query.exclude ?? '')
+      .split(',')
+      .map(Number)
+      .filter(Boolean);
+
+    /* уникальные productId + дата последнего заказа */
+    const orderedRows = await prisma.$queryRaw`
+      SELECT
+        oi."productId",
+        MAX(o."createdAt") AS last_order
+      FROM "OrderItem" oi
+      JOIN "Order"      o ON o.id = oi."orderId"
+      WHERE o."userId" = ${req.user.id}
+      GROUP BY oi."productId"
+      ORDER BY last_order DESC
+      LIMIT ${limit * 3}
+    `;
+    const orderedIds = orderedRows.map(r => r.productId);
+
+    /* убираем «что уже в корзине» или передали в exclude */
+    const ids = orderedIds
+      .filter(id => !exclude.includes(id))
+      .slice(0, limit);
+    if (!ids.length) return res.json([]);
+
+    /* карточки + модификатор цены */
+    const factor   = await getUserFactor(req.user.id);
+    const products = await prisma.product.findMany({
+      where: {
+        id: { in: ids },
+        isArchived: false,
+        stock: { gt: 0 },
+      },
+      include: {
+        promos: { where:{ expiresAt:{ gt:new Date() } } },
+      },
+    });
+
+    const byId = new Map(
+      products.map(p => [p.id, applyPriceModifier(p, factor)])
+    );
+    res.json(ids.map(id => byId.get(id)).filter(Boolean));
+  } catch (e) { next(e); }
+});
+
+
 /* ------------------------------------------------------------------
    GET /products/:id
 -------------------------------------------------------------------*/

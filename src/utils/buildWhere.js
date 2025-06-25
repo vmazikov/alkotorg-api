@@ -7,10 +7,20 @@ export default function buildWhere(q = {}) {
     search, priceMin, priceMax, volumes, degree, type,
     brand, wineColor, sweetnessLevel, wineType,
     giftPackaging, excerpt, taste,
-    countryOfOrigin, whiskyType,
+    countryOfOrigin, whiskyType, inStockOnly,
   } = q;
 
   const where = { isArchived: false };
+
+  /* ---------- «только в наличии» (правила как в getStockStatus) ---------- */
+  if (inStockOnly === '1' || inStockOnly === true) {
+    where.NOT = [
+      { stock: 0 },
+      { AND: [ { basePrice: { lt: 100 } }, { stock: { lte: 50 } } ] },
+      { AND: [ { basePrice: { lt: 500 } }, { stock: { lte: 30 } } ] },
+      { AND: [ { basePrice: { lt: 1000 } }, { stock: { lte: 10 } } ] },
+    ];
+  }
 
   if (type)     where.type   = type;
   if (search)   where.name   = { contains: search, mode: 'insensitive' };
