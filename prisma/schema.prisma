@@ -35,6 +35,7 @@ model User {
   createdAt    DateTime @default(now())
   favorites    Favorite[]
   priceSyncLogs PriceSyncLog[] 
+  productViews  ProductView[] @relation("UserViews")
 }
 
 model Store {
@@ -74,6 +75,7 @@ model Product {
   nonModify     Boolean   @default(false)
   isArchived    Boolean   @default(false)
 
+  bottleType     String?
   countryOfOrigin String?
   region         String?
   whiskyType     String?
@@ -84,6 +86,7 @@ model Product {
   manufacturer   String?
   excerpt        String?
   rawMaterials   String?
+  spirtType      String?
   taste          String?
   tasteProduct   String?
   aromaProduct   String?
@@ -96,11 +99,25 @@ model Product {
   cartItems     CartItem[]
   createdAt     DateTime  @default(now())
   favoritedBy   Favorite[] 
+  views         ProductView[] @relation("ProductViews")
 
   isNew       Boolean   @default(false)     // ← новинка
   dateAdded   DateTime  @default(now())    // ← когда завели
 
   @@index([isNew])                          // для выборки «новинки»
+}
+
+model ProductView {
+  id         Int      @id @default(autoincrement())
+  userId     Int
+  productId  Int
+  viewedAt   DateTime @default(now())
+
+  user       User     @relation("UserViews",    fields: [userId],    references: [id])
+  product    Product  @relation("ProductViews", fields: [productId], references: [id])
+
+  @@unique([userId, productId])
+  @@index([userId, viewedAt])
 }
 
 model PriceSyncLog {
