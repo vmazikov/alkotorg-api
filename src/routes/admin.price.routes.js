@@ -220,6 +220,40 @@ router.post(
 
     const extRows = loadExternalProducts(req.file.path);
 
+  /** helper: нормализуем id → "abcd1234…" или ''  */
+  const normId = id =>
+    (id || '')
+      .toString()
+      .toLowerCase()
+      .replace(/[^0-9a-f]/g, '');
+
+  /* --- соберём хэши внешнего прайса: и по id, и по article --- */
+  const extIdSet       = new Set();   // productId
+  const extArticleSet  = new Set();   // article  (может быть undefined)
+
+  for (const r of extRows) {
+    const id = normId(r.productId);
+    if (id)        extIdSet.add(id);
+    if (r.article) extArticleSet.add(r.article.trim().toLowerCase());
+  }
+
+    // берём все активные продукты одной выборкой
+   const activeProducts = await prisma.product.findMany({
+     where: { isArchived: false },
+     select: { id: true, name: true, stock: true, productId: true, article: true }
+   });
+
+   const toArchive = activeProducts.filter(p => {
+     const id  = normId(p.productId);
+     const art = p.article?.trim()?.toLowerCase();
+
+     /* нет ни id, ни article во внешнем прайсе */
+     const idMissing  = !id  || !extIdSet.has(id);
+     const artMissing = !art || !extArticleSet.has(art);
+
+     return idMissing && artMissing;
+   });
+
     let priceChanged = 0, stockChanged = 0, skipped = 0;
     const toUnarchive = [], newCandidates = [];
 
@@ -266,11 +300,14 @@ router.post(
       }
     }
 
-    return res.json({
-      preview,
-      priceChanged, stockChanged, skipped,
-      toUnarchive, newCandidates
-    });
+    const payload = {
+       preview,
+       priceChanged, stockChanged, skipped,
+       toUnarchive, newCandidates,
+       toArchive
+    };
+    if (preview) payload.toArchive = toArchive;
+    return res.json(payload);
   }
 );
 
@@ -311,6 +348,26 @@ router.post(
       skipDuplicates: true
     });
     res.json({ added: result.count });
+  }
+);
+
+router.post(
+  '/product/archive-bulk',
+  role(['ADMIN']),
+  async (req, res) => {
+    // безопасно приводим к числу
+    const ids = Array.isArray(req.body.ids)
+      ? req.body.ids.map(n => Number(n)).filter(Number.isInteger)
+      : [];
+
+    // если список пустой – сразу отвечаем, чтобы не слать некорректный IN ()
+    if (!ids.length) return res.json({ updated: 0 });
+
+    const result = await prisma.product.updateMany({
+      where: { id: { in: ids } },
+      data:  { isArchived: true }
+    });
+    res.json({ updated: result.count });
   }
 );
 
