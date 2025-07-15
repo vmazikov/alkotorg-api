@@ -24,7 +24,7 @@ const router = Router();
  */
 router.get('/', async (req, res, next) => {
   try {
-    const where = buildWhere(req.query);
+    const where = await buildWhere(req.query);
 
     /* ------------- запросы параллельно -------------------------------- */
     const [

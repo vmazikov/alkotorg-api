@@ -1,29 +1,54 @@
+// src/utils/buildWhere.js
+import { getStockRules } from './stockRules.js';
+
 /**
  * Конструирует объект Prisma `where` из query-string.
- * Используется и в /products, и в /filters.
+ * Используется в /products и /filters.
+ *
+ * ⚠️  Начиная с этой версии — **async**:
+ *      const where = await buildWhere(req.query);
  */
-export default function buildWhere(q = {}) {
+export default async function buildWhere(q = {}) {
   const {
+    /* базовые фильтры */
     search, priceMin, priceMax, volumes, degree, type,
+
+    /* чекбоксы */
     brand, wineColor, sweetnessLevel, wineType,
     giftPackaging, excerpt, taste,
-    countryOfOrigin, whiskyType, inStockOnly,
+    countryOfOrigin, whiskyType,
+
+    /* «только в наличии» */
+    inStockOnly,
   } = q;
 
+  /* всегда исключаем архив */
   const where = { isArchived: false };
 
-  /* ---------- «только в наличии» (правила как в getStockStatus) ---------- */
-  if (inStockOnly === '1' || inStockOnly === true) {
-    where.NOT = [
-      { stock: 0 },
-      { AND: [ { basePrice: { lt: 100 } }, { stock: { lte: 50 } } ] },
-      { AND: [ { basePrice: { lt: 500 } }, { stock: { lte: 30 } } ] },
-      { AND: [ { basePrice: { lt: 1000 } }, { stock: { lte: 10 } } ] },
-    ];
+  /* ───────── 1. «Только в наличии» по правилам StockRule ───────── */
+  if (inStockOnly === '1' || inStockOnly === 'true' || inStockOnly === true) {
+    const rules = await getStockRules();
+    const noRules = rules
+      .filter(r => r.label === 'Нет в наличии')
+      .sort((a, b) => a.rank - b.rank);
+
+    const notArr = noRules.map(r => {
+      const cond = {};
+      if (r.priceMax != null)  cond.basePrice = { lt: r.priceMax };
+      if (r.stockMax != null)  cond.stock     = { lte: r.stockMax };
+      return cond;
+    });
+
+    /* + всегда stock == 0 */
+    notArr.push({ stock: 0 });
+
+    /* если правил нет — fallback, но через тот же OR */
+    where.NOT = { OR: notArr.length ? notArr : [{ stock: 0 }] };
   }
 
-  if (type)     where.type   = type;
-  if (search)   where.name   = { contains: search, mode: 'insensitive' };
+  /* ───────── 2. Простые фильтры ───────── */
+  if (type)   where.type   = type;
+  if (search) where.name   = { contains: search, mode: 'insensitive' };
 
   if (priceMin) where.basePrice = { gte: +priceMin };
   if (priceMax) where.basePrice = { ...(where.basePrice || {}), lte: +priceMax };

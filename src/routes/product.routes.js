@@ -131,7 +131,7 @@ router.get('/', async (req, res, next) => {
     const factor = await getUserFactor(req.user.id);   // helper из файла выше
 
     /* ────────── WHERE ------------------------------------------------------ */
-    const where = buildWhere(req.query);
+    const where = await buildWhere(req.query);
 
     if (type)     where.type   = type;
     if (search)   where.name   = { contains: search, mode: 'insensitive' };

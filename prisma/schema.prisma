@@ -58,6 +58,15 @@ model Store {
   orders     Order[]
 }
 
+model StockRule {
+  id         Int     @id @default(autoincrement())
+  priceMax   Int     // верхняя граница цены, ₽  (NULL = ∞)
+  stockMax   Int     // верхняя граница остатка  (NULL = ∞)
+  label      String  // «Нет в наличии», «Товара мало», …
+  color      String  // Tailwind-класс, напр. bg-rose-600
+  rank       Int     // порядок применения (меньше — раньше)
+}
+
 model Product {
   id            Int       @id @default(autoincrement())
   productId     String    @unique
@@ -198,26 +207,6 @@ model CartItem {
   qty       Int
 
   @@unique([cartId, productId])
-}
-
-model StockRule {
-  id        Int      @id @default(autoincrement())
-  // По какому полю продукта сравниваем
-  field     String   // e.g. "stock", "basePrice", "type", "id", "name"
-  // Оператор сравнения
-  operator  String   // e.g. "=", "<", "<=", ">", ">=", "in", "contains"
-  // Значение для сравнения (строка или число)
-  value     String
-  // Результат: текст и CSS-класс цвета
-  label     String
-  color     String   // например: "bg-red-600", "bg-emerald-600" и т.д.
-  // Приоритет: чем меньше, тем раньше проверяется
-  priority  Int      @default(100)
-  // Время создания/обновления
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@index([priority])
 }
 
 enum Role {
