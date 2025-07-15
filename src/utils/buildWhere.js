@@ -28,7 +28,6 @@ export default async function buildWhere(q = {}) {
   /* ───────── 1. «Только в наличии» по правилам StockRule ───────── */
   if (inStockOnly === '1' || inStockOnly === 'true' || inStockOnly === true) {
     const rules = await getStockRules();
-    console.log('Stock rules:', rules);
     const noRules = rules
       .filter(r => r.label === 'Нет в наличии')
       .sort((a, b) => a.rank - b.rank);
