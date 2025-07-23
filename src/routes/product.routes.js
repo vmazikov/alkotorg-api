@@ -170,6 +170,8 @@ router.get('/', async (req, res, next) => {
       sort === 'name_asc'    ? { name: 'asc' }  :
       sort === 'price_asc'   ? { basePrice: 'asc' }  :
       sort === 'price_desc'  ? { basePrice: 'desc' } :
+      sort === 'volume_asc'  ? { volume: 'asc' } :
+      sort === 'volume_desc' ? { volume: 'desc' } :
       sort === 'degree_asc'  ? { degree: 'asc' } :
       sort === 'degree_desc' ? { degree: 'desc' } :
       undefined;
@@ -181,6 +183,7 @@ router.get('/', async (req, res, next) => {
         if (cursorObj?.id)       cursorObj.id       = +cursorObj.id;
         if (cursorObj?.degree)   cursorObj.degree   = +cursorObj.degree;
         if (cursorObj?.basePrice)cursorObj.basePrice= +cursorObj.basePrice;
+        if (cursorObj?.volume)    cursorObj.volume    = +cursorObj.volume;
         if (cursorObj?.name)     cursorObj.name     = String(cursorObj.name); // на всяк.
       } catch { 
         cursorObj = null; 
