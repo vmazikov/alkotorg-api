@@ -55,6 +55,18 @@ app.use(express.urlencoded({
 app.use(express.urlencoded({ extended: true }));
 app.use(morgan('dev'));
 
+app.use((err, req, res, next) => {
+  if (err instanceof SyntaxError && "body" in err) {
+    console.error("Ошибка парсинга JSON:", err.message);
+    return res.status(400).json({ error: "Invalid JSON" });
+  }
+  if (err instanceof URIError) {
+    console.error("Ошибка декодирования URL:", req.url, err.message);
+    return res.status(400).send("Bad request");
+  }
+  next(err);
+});
+
 // ─── Swagger UI ─────────────────────────────────────────────────────
 const swaggerSpec = swaggerJsdoc({
   definition: {
