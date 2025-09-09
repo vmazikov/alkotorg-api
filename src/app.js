@@ -1,6 +1,7 @@
 // src/app.js
 import './utils/telegramBot.js';
 import express           from 'express';
+import bodyParser from "body-parser";
 import cors              from 'cors';
 import morgan            from 'morgan';
 import swaggerUi         from 'swagger-ui-express';
@@ -21,6 +22,15 @@ import stockRules from './routes/stockRules.routes.js';
 import { authMiddleware } from './middlewares/auth.js';
 
 const app = express();
+app.use(bodyParser.json());
+
+// обработчик ошибок JSON
+app.use((err, req, res, next) => {
+  if (err instanceof SyntaxError && "body" in err) {
+    return res.status(400).json({ error: "Invalid JSON" });
+  }
+  next();
+});
 
 // ─── __dirname для ESM ───────────────────────────────────────────────
 const __filename = fileURLToPath(import.meta.url);
