@@ -7,9 +7,11 @@ import { notifyAgent }    from '../utils/teleg.js';
 const router = Router();
 router.use(authMiddleware);
 
+const log = (...a) => console.log('[orders]', ...a);
+
 /* ------------------------------------------------------------------
    POST /orders
-   Создать заказ, посчитать цены и оповестить Telegram-агента
+   Создать заказ, посчитать цены и (неблокирующе) оповестить Telegram-агента
 -------------------------------------------------------------------*/
 router.post('/', async (req, res, next) => {
   try {
@@ -20,7 +22,7 @@ router.post('/', async (req, res, next) => {
         .json({ error: 'storeId и непустой массив items обязательны' });
     }
 
-    /* 1. priceModifier (для USER / MANAGER) и telegramId агента */
+    // 1) Берём модификатор и телеграм у текущего пользователя
     const customer = await prisma.user.findUnique({
       where: { id: req.user.id },
       select: {
@@ -28,12 +30,14 @@ router.post('/', async (req, res, next) => {
         agent: { select: { telegramId: true } },
       },
     });
-    if (!customer) return res.status(404).json({ error: 'Покупатель не найден' });
+    if (!customer) {
+      return res.status(404).json({ error: 'Покупатель не найден' });
+    }
 
-    const factor = 1 + customer.priceModifier / 100;
+    const factor = 1 + ((customer.priceModifier ?? 0) / 100);
 
-    /* 2. нужные продукты */
-    const productIds = items.map((i) => i.productId);
+    // 2) Подтягиваем нужные продукты
+    const productIds = items.map(i => i.productId);
     const products = await prisma.product.findMany({
       where: { id: { in: productIds } },
       select: {
@@ -48,24 +52,24 @@ router.post('/', async (req, res, next) => {
       },
     });
 
-    /* 3. позиции заказа */
+    // 3) Считаем позиции и сумму
     let total = 0;
     const createItems = items.map(({ productId, qty }) => {
-      const p = products.find((x) => x.id === productId);
+      const p = products.find(x => x.id === productId);
       if (!p) throw new Error(`Product ${productId} not found`);
 
       const raw   = p.promos.length ? p.promos[0].promoPrice : p.basePrice;
-      const price = p.nonModify ? raw : +((raw * factor).toFixed(2));
+      const price = p.nonModify ? raw : +(raw * factor).toFixed(2);
       total += price * qty;
       return { productId, quantity: qty, price };
     });
     total = +total.toFixed(2);
 
-    /* 4. создаём заказ */
+    // 4) Создаём заказ
     const order = await prisma.order.create({
       data: {
         storeId: +storeId,
-        userId:  req.user.id,   // кто оформил
+        userId:  req.user.id,
         total,
         items: { create: createItems },
       },
@@ -78,9 +82,7 @@ router.post('/', async (req, res, next) => {
               select: {
                 id: true,
                 fullName: true,
-                agent: {
-                  select: { login: true, fullName: true, telegramId: true },
-                },
+                agent: { select: { login: true, fullName: true, telegramId: true } },
               },
             },
           },
@@ -91,7 +93,10 @@ router.post('/', async (req, res, next) => {
       },
     });
 
-    /* 5. Telegram-уведомление агенту */
+    // 5) Отдаём ответ СРАЗУ — заказ создан
+    res.status(201).json(order);
+
+    // 6) Telegram-уведомление — НЕ блокируем, ошибки гасим внутри
     const tg = order.store.user.agent?.telegramId;
     if (tg) {
       const link = `https://tk-alcotorg.ru/orders/${order.id}`;
@@ -101,10 +106,15 @@ router.post('/', async (req, res, next) => {
         `Магазин: ${order.store.title}\n` +
         `Сумма: ${order.total.toFixed(2)} ₽\n\n` +
         `Перейти к заказу: ${link}`;
-      await notifyAgent(tg, text);
-    }
 
-    res.status(201).json(order);
+      // асинхронно, без await — чтобы сеть/Telegram не влияли на API
+      setImmediate(() => {
+        notifyAgent(tg, text).catch(err => {
+          // на всякий пожарный — хотя notifyAgent уже ловит ошибки
+          log('tg notify failed (extra catch):', err?.code || err?.message || err);
+        });
+      });
+    }
   } catch (err) {
     next(err);
   }
@@ -112,11 +122,6 @@ router.post('/', async (req, res, next) => {
 
 /* ------------------------------------------------------------------
    GET /orders?status=[NEW|DONE]
-   Видимость:
-   • AGENT   → заказы клиентов (user.agentId = agent.id)
-   • USER    → все заказы магазинов, которыми он владеет (store.userId)
-   • MANAGER → заказы магазинов, где он менеджер (store.managerId)
-   • ADMIN   → все
 -------------------------------------------------------------------*/
 router.get('/', async (req, res, next) => {
   try {
@@ -142,16 +147,10 @@ router.get('/', async (req, res, next) => {
         store: {
           select: {
             title: true,
-            user: {
-              select: {
-                agent: { select: { login: true, fullName: true } },
-              },
-            },
+            user: { select: { agent: { select: { login: true, fullName: true } } } },
           },
         },
-        items: {
-          include: { product: { select: { name: true, volume: true } } },
-        },
+        items: { include: { product: { select: { name: true, volume: true } } } },
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -164,7 +163,6 @@ router.get('/', async (req, res, next) => {
 
 /* ------------------------------------------------------------------
    GET /orders/:id
-   Та же логика доступа, но к одному заказу
 -------------------------------------------------------------------*/
 router.get('/:id', async (req, res, next) => {
   try {
@@ -172,16 +170,8 @@ router.get('/:id', async (req, res, next) => {
       where: { id: +req.params.id },
       include: {
         user:  { select: { login: true, fullName: true, agentId: true } },
-        store: {
-          select: {
-            title: true,
-            user:   { select: { id: true } },
-            managerId: true,
-          },
-        },
-        items: {
-          include: { product: { select: { name: true, volume: true } } },
-        },
+        store: { select: { title: true, user: { select: { id: true } }, managerId: true } },
+        items: { include: { product: { select: { name: true, volume: true } } } },
       },
     });
     if (!order) return res.status(404).json({ error: 'Not found' });
