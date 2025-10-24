@@ -212,7 +212,7 @@ function loadExternalProducts(path) {
 
 router.post(
   '/sync-db',
-  role(['ADMIN']),
+  role(['ADMIN','AGENT']),
   dbUpload.single('file'),
   async (req, res) => {
     if (!req.file) return res.status(400).json({ error:'Файл не получен' });
@@ -229,29 +229,23 @@ router.post(
 
   /* --- соберём хэши внешнего прайса: и по id, и по article --- */
   const extIdSet       = new Set();   // productId
-  const extArticleSet  = new Set();   // article  (может быть undefined)
 
   for (const r of extRows) {
     const id = normId(r.productId);
     if (id)        extIdSet.add(id);
-    if (r.article) extArticleSet.add(r.article.trim().toLowerCase());
   }
 
     // берём все активные продукты одной выборкой
    const activeProducts = await prisma.product.findMany({
-     where: { isArchived: false },
-     select: { id: true, name: true, stock: true, productId: true, article: true }
+     where:  { isArchived: false },
+     select: { id: true, name: true, stock: true, productId: true }
    });
 
    const toArchive = activeProducts.filter(p => {
      const id  = normId(p.productId);
-     const art = p.article?.trim()?.toLowerCase();
-
-     /* нет ни id, ни article во внешнем прайсе */
-     const idMissing  = !id  || !extIdSet.has(id);
-     const artMissing = !art || !extArticleSet.has(art);
-
-     return idMissing && artMissing;
+    /* нет id во внешнем прайсе → кандидаты в архив */
+    const idMissing  = !id || !extIdSet.has(id);
+    return idMissing;
    });
 
     let priceChanged = 0, stockChanged = 0, skipped = 0;
@@ -316,7 +310,7 @@ router.post(
  */
 router.post(
   '/product/unarchive-bulk',
-  role(['ADMIN']),
+  role(['ADMIN','AGENT']),
   async (req, res) => {
    // конвертируем всё, безопасно отфильтровываем NaN
    const ids = Array.isArray(req.body.ids)
@@ -332,7 +326,7 @@ router.post(
 
 router.post(
   '/product/create-bulk',
-  role(['ADMIN']),
+  role(['ADMIN','AGENT']),
   async (req, res) => {
     const rows = Array.isArray(req.body.rows) ? req.body.rows : [];
     const data = rows.map(r => ({
@@ -353,7 +347,7 @@ router.post(
 
 router.post(
   '/product/archive-bulk',
-  role(['ADMIN']),
+  role(['ADMIN','AGENT']),
   async (req, res) => {
     // безопасно приводим к числу
     const ids = Array.isArray(req.body.ids)
