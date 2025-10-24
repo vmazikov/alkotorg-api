@@ -41,7 +41,7 @@ router.use(
 // /admin/price/* доступно только ADMIN
 router.use(
   '/price',
-  role(['ADMIN']),
+  role(['ADMIN','AGENT']),
   priceRouter
 )
 
