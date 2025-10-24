@@ -166,11 +166,12 @@ router.put('/:id', async (req, res, next) => {
 
       data.userId  = Number(userId);
       data.agentId = newOwner.agentId; // синхронизируем агентство
-    // maShopId — обрабатываем ОТДЕЛЬНО от смены владельца
+    }
+
+    // maShopId — ОБРАБАТЫВАЕМ ОТДЕЛЬНО от смены владельца
     // только админ может менять; поддерживаем и установку, и очистку (null)
     if (req.user.role === 'ADMIN' && maShopId !== undefined) {
       data.maShopId = normMaHex(maShopId);
-    }
     }
 
     const updated = await prisma.store.update({
