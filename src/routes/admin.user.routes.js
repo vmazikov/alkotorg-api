@@ -31,6 +31,7 @@ router.get('/', async (req, res, next) => {
         role:         true,
         priceModifier:true,
         agentId:      true,
+        maAgentId:    true,
       },
       orderBy: { id: 'asc' },
     });

@@ -72,6 +72,12 @@ router.post('/', async (req, res, next) => {
     let { userId, title, address, managerId = null, maShopId = null } = req.body;
     userId = Number(userId);
 
+    // Предохранитель: если фронт по ошибке шлёт id в POST — это попытка редактирования.
+    // Прерываем, чтобы не создавать дубликат "нового" магазина.
+    if (req.body.id !== undefined) {
+      return res.status(400).json({ error: 'Для редактирования используйте PUT /admin/stores/:id' });
+    }
+
     if (!userId || !title || !address) {
       return res.status(400).json({ error: 'userId, title и address обязательны' });
     }
@@ -160,7 +166,8 @@ router.put('/:id', async (req, res, next) => {
 
       data.userId  = Number(userId);
       data.agentId = newOwner.agentId; // синхронизируем агентство
-      // maShopId — только админ: валидация и установка/очистка
+    // maShopId — обрабатываем ОТДЕЛЬНО от смены владельца
+    // только админ может менять; поддерживаем и установку, и очистку (null)
     if (req.user.role === 'ADMIN' && maShopId !== undefined) {
       data.maShopId = normMaHex(maShopId);
     }
