@@ -31,6 +31,9 @@ model User {
   // менеджер одного магазина
   storeManaged Store?   @relation("StoreManager")
 
+  // только у агентов заполняем (nullable + unique — ОК)
+  maAgentId     String?  @unique
+
   orders       Order[]
   createdAt    DateTime @default(now())
   favorites    Favorite[]
@@ -54,6 +57,9 @@ model Store {
   // менеджер этого магазина
   managerId  Int?     @unique
   manager    User?    @relation("StoreManager", fields: [managerId], references: [id])
+
+  // MA ShopID (nullable + unique — ОК)
+  maShopId   String? @unique
 
   orders     Order[]
 }
@@ -176,6 +182,13 @@ model Order {
 
   items        OrderItem[]
   createdAt    DateTime    @default(now())
+
+  // учёт интеграции с MA
+  maInvoiceIdHex String?
+  maAppliedAt     DateTime?
+  maError         String?
+
+  @@index([status, createdAt])
 }
 
 model OrderItem {

@@ -51,6 +51,7 @@ router.post('/', async (req, res, next) => {
       role: newRole = 'USER',
       priceModifier = 0,
       agentId = null,
+      maAgentId = null,
     } = req.body;
 
     if (!login || !password) {
@@ -61,6 +62,7 @@ router.post('/', async (req, res, next) => {
     if (req.user.role === 'AGENT') {
       newRole = 'USER';
       agentId = req.user.id;
+      maAgentId = null; // агент не может задавать MA AgentID
     }
 
     // проверка уникальности
@@ -75,10 +77,13 @@ router.post('/', async (req, res, next) => {
         role: newRole,
         priceModifier: +priceModifier,
         agentId,
+        ...(req.user.role === 'ADMIN' && newRole === 'AGENT'
+          ? { maAgentId: normMaHex(maAgentId) }
+          : {}),
       },
       select: {
         id: true, login: true, fullName: true,
-        phone: true, role: true, priceModifier: true, agentId: true
+        phone: true, role: true, priceModifier: true, agentId: true, maAgentId: true
       },
     });
     res.status(201).json(user);
@@ -111,10 +116,11 @@ router.put('/:id', async (req, res, next) => {
       }
     }
 
-    const {
-      login, password, fullName, phone,
-      role: newRole, priceModifier, agentId: newAgentId
-    } = req.body;
+   const {
+     login, password, fullName, phone,
+     role: newRole, priceModifier, agentId: newAgentId,
+     maAgentId
+   } = req.body;
 
     const data = {};
     // Общие поля
@@ -131,13 +137,22 @@ router.put('/:id', async (req, res, next) => {
       if (login     !== undefined) data.login   = login;
       if (newRole   !== undefined) data.role    = newRole;
       if (newAgentId!== undefined) data.agentId = newAgentId;
+      // maAgentId можно править только у AGENT
+      if (maAgentId !== undefined) {
+        const targetRole = newRole ?? existing.role;
+        if (targetRole === 'AGENT') {
+          data.maAgentId = normMaHex(maAgentId);
+        } else {
+          data.maAgentId = null; // если перестали быть агентом — обнуляем
+        }
+      }
     }
 
     // собственно, обновляем
     const user = await prisma.user.update({
       where: { id },
       data,
-      select: { id:true, login:true, fullName:true, phone:true, role:true, priceModifier:true, agentId:true },
+      select: { id:true, login:true, fullName:true, phone:true, role:true, priceModifier:true, agentId:true, maAgentId:true },
     });
 
     // Если это покупатель и админ сменил агентId
@@ -198,3 +213,13 @@ router.delete('/:id', async (req, res, next) => {
 });
 
 export default router;
+
+// ─── helpers ─────────────────────────────────────────────────────────────
+function normMaHex(v) {
+  if (v == null || v === '') return null;
+  const s = String(v).trim().toLowerCase();
+  if (!/^[0-9a-f]{32}$/.test(s)) {
+    throw Object.assign(new Error('maAgentId должен быть 32-символьным hex (без дефисов)'), { status: 400 });
+  }
+  return s;
+}

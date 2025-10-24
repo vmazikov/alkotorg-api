@@ -55,6 +55,7 @@ router.get('/', async (req, res, next) => {
       },
     });
 
+    // Prisma уже вернёт maShopId, просто отдадим как есть
     res.json(stores);
   } catch (err) {
     next(err);
@@ -68,7 +69,7 @@ router.get('/', async (req, res, next) => {
 -------------------------------------------------------------------*/
 router.post('/', async (req, res, next) => {
   try {
-    let { userId, title, address, managerId = null } = req.body;
+    let { userId, title, address, managerId = null, maShopId = null } = req.body;
     userId = Number(userId);
 
     if (!userId || !title || !address) {
@@ -94,6 +95,9 @@ router.post('/', async (req, res, next) => {
         title,
         address,
         managerId: managerId != null ? Number(managerId) : null,
+        ...(req.user.role === 'ADMIN'
+          ? { maShopId: normMaHex(maShopId) }
+          : {}), // агенту запрещаем задавать maShopId
       },
       include: {
         user: {
@@ -133,7 +137,7 @@ router.put('/:id', async (req, res, next) => {
       return res.status(403).json({ error: 'Нет доступа к этому магазину' });
     }
 
-    const { title, address, userId, managerId = null } = req.body;
+    const { title, address, userId, managerId = null, maShopId } = req.body;
     const data = {};
 
     if (title   !== undefined) data.title   = title;
@@ -156,6 +160,10 @@ router.put('/:id', async (req, res, next) => {
 
       data.userId  = Number(userId);
       data.agentId = newOwner.agentId; // синхронизируем агентство
+      // maShopId — только админ: валидация и установка/очистка
+    if (req.user.role === 'ADMIN' && maShopId !== undefined) {
+      data.maShopId = normMaHex(maShopId);
+    }
     }
 
     const updated = await prisma.store.update({
@@ -207,3 +215,16 @@ router.delete('/:id', async (req, res, next) => {
 });
 
 export default router;
+
+
+// ─── helpers ─────────────────────────────────────────────────────────────
+function normMaHex(v) {
+  if (v == null || v === '') return null;
+  const s = String(v).trim().toLowerCase();
+  if (!/^[0-9a-f]{32}$/.test(s)) {
+    const err = new Error('maShopId должен быть 32-символьным hex (без дефисов)');
+    err.status = 400;
+    throw err;
+  }
+  return s;
+}
