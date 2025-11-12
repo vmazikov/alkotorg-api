@@ -7,6 +7,7 @@ import buildWhere from '../utils/buildWhere.js';   // ← добавили
 import { makeNextCursor, buildWhereAfter } from '../utils/buildNextCursor.js';
 
 const router = Router();
+let isSimilarityAvailable = true; // отключаем similarity, если нет pg_trgm
 
 // Подключаем аутентификацию, чтобы в req.user был текущий пользователь
 router.use(authMiddleware);
@@ -49,6 +50,7 @@ router.get('/suggest', async (req, res, next) => {
       SELECT id, name, type, "countryOfOrigin"
       FROM "Product"
       WHERE name ILIKE ${'%' + query + '%'}
+        AND "isArchived" = false
       ORDER BY POSITION(LOWER(${query}) IN LOWER(name))
       LIMIT 5
     `;
@@ -58,12 +60,23 @@ router.get('/suggest', async (req, res, next) => {
 
 router.get('/search', async (req, res, next) => {
   try {
-    const { query } = req.query;
+    const normalizeQuery = value => {
+      if (!value) return '';
+      if (Array.isArray(value)) return String(value[0] ?? '');
+      return String(value);
+    };
+
+    const rawQuery = normalizeQuery(req.query.query) || normalizeQuery(req.query.q);
+    const query = rawQuery.trim();
+
     if (!query || query.length < 2) return res.json([]);
 
     /* точные id ------------------------------------------------------ */
     const exactIds = await prisma.product.findMany({
-      where : { name:{ contains:query, mode:'insensitive'} },
+      where : {
+        name: { contains: query, mode: 'insensitive' },
+        isArchived: false,
+      },
       select: { id:true },
       take  : 50,
     }).then(r => r.map(x => x.id));
@@ -73,14 +86,27 @@ router.get('/search', async (req, res, next) => {
       ? Prisma.sql`AND id NOT IN (${Prisma.join(exactIds)})`
       : Prisma.empty;
 
-    const similarIds = await prisma.$queryRaw`
-      SELECT id
-      FROM "Product"
-      WHERE similarity(name, ${query}) > 0.3
-        ${exclude}
-      ORDER BY similarity(name, ${query}) DESC
-      LIMIT 50
-    `.then(r => r.map(x => x.id));
+    let similarIds = [];
+    if (isSimilarityAvailable) {
+      try {
+        similarIds = await prisma.$queryRaw`
+          SELECT id
+          FROM "Product"
+          WHERE similarity(name, ${query}) > 0.3
+            AND "isArchived" = false
+            ${exclude}
+          ORDER BY similarity(name, ${query}) DESC
+          LIMIT 50
+        `.then(r => r.map(x => x.id));
+      } catch (err) {
+        if (err?.code === 'P2010' || err?.message?.includes('similarity')) {
+          isSimilarityAvailable = false;
+          console.warn('[products/search] similarity() недоступна, отключаем pg_trgm fallback');
+        } else {
+          throw err;
+        }
+      }
+    }
 
     const ids = [...exactIds, ...similarIds];
     if (!ids.length) return res.json([]);
@@ -88,7 +114,10 @@ router.get('/search', async (req, res, next) => {
     /* полные карточки + модификатор ------------------------------- */
     const factor   = await getUserFactor(req.user.id);
     const products = await prisma.product.findMany({
-      where  : { id:{ in: ids } },
+      where  : {
+        id: { in: ids },
+        isArchived: false,
+      },
       include: { promos:{ where:{ expiresAt:{ gt:new Date() } } } },
     });
 
@@ -96,7 +125,11 @@ router.get('/search', async (req, res, next) => {
       products.map(p => [p.id, applyPriceModifier(p, factor)])
     );
 
-    res.json(ids.map(id => map[id]));
+    const ordered = ids
+      .map(id => map[id])
+      .filter(Boolean);
+
+    res.json(ordered);
   } catch (e) { next(e); }
 });
 
