@@ -2,6 +2,7 @@
 import { Router } from 'express';
 import prisma from '../utils/prisma.js';
 import { authMiddleware, role } from '../middlewares/auth.js';
+import { normalizeName } from '../utils/strings.js';
 
 const router = Router();
 
@@ -43,7 +44,7 @@ router.put('/:id', async (req, res, next) => {
 
     // Текстовые поля
     [
-      'article','name','brand','type','img',
+      'article','name','rawName','brand','type','img',
       'wineColor','sweetnessLevel','wineType','giftPackaging',
       'manufacturer','excerpt','rawMaterials','taste',
       'description'           // ← добавлено
@@ -63,7 +64,12 @@ router.put('/:id', async (req, res, next) => {
 
     const updated = await prisma.product.update({
       where: { id },
-      data,
+      data: {
+        ...data,
+        ...(data.rawName !== undefined
+          ? { canonicalName: data.rawName ? normalizeName(data.rawName) : null }
+          : {})
+      },
     });
     res.json(updated);
   } catch (err) {

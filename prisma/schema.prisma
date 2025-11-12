@@ -75,7 +75,12 @@ model StockRule {
 
 model Product {
   id            Int       @id @default(autoincrement())
-  productId     String    @unique
+  // текущий «актуальный» внешний hex (MobileAgent). Больше НЕ уникальный
+  productId     String?
+  // «сырое» имя из внешней БД (для сравнения/синхронизации)
+  rawName       String?
+  // нормализованное имя (для матчей при смене hex)
+  canonicalName String?
   article       String?   @unique
   productVolumeId String?
   name          String
@@ -120,6 +125,20 @@ model Product {
   dateAdded   DateTime  @default(now())    // ← когда завели
 
   @@index([isNew])                          // для выборки «новинки»
+  @@index([canonicalName])
+  externals   ProductExternalId[]
+}
+
+model ProductExternalId {
+  id         Int      @id @default(autoincrement())
+  productId  Int
+  product    Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  externalId String   // hex из MobileAgent (источник один, поэтому без поля source)
+  isPrimary  Boolean  @default(false)
+  syncedAt   DateTime @default(now())
+
+  @@unique([externalId])
+  @@index([productId])
 }
 
 model ProductView {

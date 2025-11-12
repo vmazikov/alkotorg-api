@@ -8,6 +8,7 @@ import prisma            from '../utils/prisma.js';
 import { role }          from '../middlewares/auth.js';
 import { toFloat, toInt }from '../utils/parse.js';
 import { Buffer } from 'buffer';
+import { normalizeName } from '../utils/strings.js';
 
 const router   = Router();
 const upload   = multer({ dest: 'uploads/' });
@@ -24,7 +25,7 @@ const MUTABLE_FIELDS_FULL = [
   'manufacturer', 'excerpt', 'rawMaterials',
   'taste', 'spirtType', 'bottleType',
   'tasteProduct', 'aromaProduct', 'colorProduct', 'сombinationsProduct',
-  'description'
+  'description', 'rawName'
 ];
 
 /** Пустая строка из Excel → null, иначе возвращаем как есть */
@@ -88,13 +89,11 @@ router.post(
       const r = cleanRowKeys(raw);     // ← нормализовали ключи
 
       const data = mapRow(r);        // mapRow теперь работает со «чистыми» ключами
-      const uniqueWhere = data.productId
-        ? { productId: data.productId }
-        : data.article
-          ? { article: data.article }
-          : null;
-      if (!uniqueWhere) { skipped++; continue; }
-      const existing = await prisma.product.findUnique({ where: uniqueWhere });
+      const hasHex = !!data.productId;
+      if (!hasHex) { skipped++; continue; }
+      const existing = await prisma.product.findFirst({
+        where: { productId: data.productId }
+      });
       if (!existing && mode === 'update') { skipped++; continue; }
 
       let product;
@@ -103,6 +102,13 @@ router.post(
         if (existing) {
           // --- сравниваем ---
           let patch = buildUpdateForFull(data);
+          // Если пришёл rawName, но не пришёл name — не трогаем name
+          if (data.rawName != null && !('name' in data)) {
+            delete patch.name;
+          }
+          // Обновим «сырое» и каноническое имя тоже
+          patch.rawName = data.rawName ?? existing.rawName ?? null;
+          patch.canonicalName = data.rawName ? normalizeName(data.rawName) : (existing.canonicalName ?? null);
           patch = dropUnchanged(patch, existing);
           // ещё проверяем isArchived
           if (!isEqual(data.isArchived, existing.isArchived)) {
@@ -110,7 +116,7 @@ router.post(
           }
 
           if (Object.keys(patch).length) {
-            await prisma.product.update({ where: uniqueWhere, data: patch });
+            await prisma.product.update({ where: { id: existing.id }, data: patch });
             updated++;
           } else {
             skipped++;          }
@@ -120,7 +126,7 @@ router.post(
             const needStock  = !isEqual(existing.stock,     data.stock);
             if (needPrice || needStock) {
               await prisma.product.update({
-                where: uniqueWhere,
+                where: { id: existing.id },
                 data : {
                   ...(needPrice && { basePrice: data.basePrice }),
                   ...(needStock && { stock:     data.stock })
@@ -131,7 +137,13 @@ router.post(
               skipped++;
             }
           } else {
-            await prisma.product.create({ data });
+            await prisma.product.create({
+              data: {
+                ...data,
+                rawName: data.rawName ?? data.name ?? null,
+                canonicalName: data.rawName ? normalizeName(data.rawName) : normalizeName(data.name || '')
+              }
+            });
             added++;
           }
           /* promo сохраняем только при создании нового товара */
@@ -147,16 +159,31 @@ router.post(
           stock:     data.stock,
           isArchived:false,
         };
+        // rawName/canonicalName при обычном режиме тоже обновим
+        if (data.rawName != null) {
+          baseUpdate.rawName = data.rawName;
+          baseUpdate.canonicalName = normalizeName(data.rawName);
+        }
         if (data.productVolumeId != null) baseUpdate.productVolumeId = data.productVolumeId;
         if (data.countryOfOrigin != null) baseUpdate.countryOfOrigin = data.countryOfOrigin;
         if (data.whiskyType      != null) baseUpdate.whiskyType      = data.whiskyType;
 
-        product = await prisma.product.upsert({
-          where:  uniqueWhere,
-          update: baseUpdate,
-          create: data,
-        });
-        existing ? updated++ : added++;
+        if (existing) {
+          product = await prisma.product.update({
+            where: { id: existing.id },
+            data: baseUpdate
+          });
+          updated++;
+        } else {
+          product = await prisma.product.create({
+            data: {
+              ...data,
+              rawName: data.rawName ?? data.name ?? null,
+              canonicalName: data.rawName ? normalizeName(data.rawName) : normalizeName(data.name || '')
+            }
+          });
+          added++;
+        }
 
         if (data.promo) {
           await prisma.promo.upsert({
@@ -201,9 +228,10 @@ function loadExternalProducts(path) {
 
   return rows.map(r => ({
     productId : decryptAesEcb(r.ProductID).toString('hex'),
-    name      : typeof r.ProductName === 'string'
+    rawName   : typeof r.ProductName === 'string'
                   ? r.ProductName.trim()
                   : decryptAesEcb(r.ProductName).toString('utf8').trim(),
+    name      : undefined, // не перетираем ваш «красивый» name из БД
     stock     : Number(r.VolumeInStock),
     basePrice : Number(r.BasePrice),
   }));
@@ -235,17 +263,27 @@ router.post(
     if (id)        extIdSet.add(id);
   }
 
-    // берём все активные продукты одной выборкой
+   // берём активные товары и их алиасы
    const activeProducts = await prisma.product.findMany({
      where:  { isArchived: false },
-     select: { id: true, name: true, stock: true, productId: true }
+     select: { id: true, name: true, rawName: true, canonicalName: true, stock: true, productId: true }
    });
+   const aliases = await prisma.productExternalId.findMany({
+     select: { productId: true, externalId: true }
+   });
+   const aliasByHex = new Map(aliases.map(a => [normId(a.externalId), a.productId]));
 
+   // Кандидаты на архив: те активные, у кого НЕТ ни текущего hex, ни какого-либо алиаса в текущем внешнем наборе
    const toArchive = activeProducts.filter(p => {
-     const id  = normId(p.productId);
-    /* нет id во внешнем прайсе → кандидаты в архив */
-    const idMissing  = !id || !extIdSet.has(id);
-    return idMissing;
+     const curHex = normId(p.productId);
+     const curHexPresent = !!curHex && extIdSet.has(curHex);
+     if (curHexPresent) return false;
+     // если хоть один из алиасов этого товара присутствует — не архивируем
+     for (const h of extIdSet) {
+       const pid = aliasByHex.get(h);
+       if (pid === p.id) return false;
+     }
+     return true;
    });
 
     let priceChanged = 0, stockChanged = 0, skipped = 0;
@@ -256,12 +294,57 @@ router.post(
         skipped++; continue;
       }
 
-      const prod = await prisma.product.findUnique({
-        where: { productId: r.productId },
-        select:{ id:true, basePrice:true, stock:true, isArchived:true, name:true }
-      });
+      const hex = normId(r.productId);
+      const canon = normalizeName(r.rawName || '');
+
+      // 1) Ищем по алиасу (быстрый идеальный путь)
+      let prodIdByAlias = aliasByHex.get(hex) || null;
+      let prod = null;
+      if (prodIdByAlias) {
+        prod = await prisma.product.findUnique({
+          where: { id: prodIdByAlias },
+          select:{ id:true, basePrice:true, stock:true, isArchived:true, name:true, productId:true }
+        });
+      }
+
+      // 2) Если не нашли по алиасу — ищем по текущему product.productId
+      if (!prod) {
+        prod = await prisma.product.findFirst({
+          where: { productId: r.productId },
+          select:{ id:true, basePrice:true, stock:true, isArchived:true, name:true, productId:true }
+        });
+      }
+
+      // 3) Если всё ещё не нашли — ищем по canonicalName среди активных/архивных
+      if (!prod && canon) {
+        prod = await prisma.product.findFirst({
+          where: { canonicalName: canon },
+          select:{ id:true, basePrice:true, stock:true, isArchived:true, name:true, productId:true }
+        });
+      }
 
       if (prod) {
+        // hex поменялся? перенесём product.productId на новый и добавим алиас (старый тоже останется в алиасах)
+        const needHexMove = normId(prod.productId) !== hex;
+        if (needHexMove && !preview) {
+          // добавим новый алиас на этот же товар (если его нет)
+          const existsAlias = await prisma.productExternalId.findUnique({ where: { externalId: r.productId }});
+          if (!existsAlias) {
+            await prisma.productExternalId.create({
+              data: { productId: prod.id, externalId: r.productId, isPrimary: true }
+            });
+          } else if (existsAlias.productId !== prod.id) {
+            // редкий конфликт: тот же hex привязан к другому товару — не трогаем автоматически
+          }
+          // перенесём «текущий» hex в самом продукте
+          await prisma.product.update({
+            where: { id: prod.id },
+            data: { productId: r.productId }
+          });
+          // и в in-memory индексе алиасов
+          aliasByHex.set(hex, prod.id);
+        }
+
         /* ---- цена ---- */
         if (Math.abs(prod.basePrice - r.basePrice) >= 1) {
           priceChanged++;
@@ -279,7 +362,12 @@ router.post(
           if (!preview) {
             await prisma.product.update({
               where:{ id:prod.id },
-              data :{ stock:r.stock }
+              data :{
+                stock:r.stock,
+                // обновим «сырое» имя и каноническое, чтобы дальше матчить стабильнее
+                rawName: r.rawName ?? prod.rawName,
+                canonicalName: canon || prod.canonicalName
+              }
             });
           }
           if (prod.isArchived && inc) {
@@ -290,7 +378,14 @@ router.post(
           }
         }
       } else {
-        newCandidates.push(r);
+        // Не нашли — кандидат на создание
+        newCandidates.push({
+          productId: r.productId,
+          rawName:   r.rawName,
+          stock:     r.stock,
+          basePrice: r.basePrice,
+          canonicalName: canon
+        });
       }
     }
 
@@ -329,19 +424,25 @@ router.post(
   role(['ADMIN','AGENT']),
   async (req, res) => {
     const rows = Array.isArray(req.body.rows) ? req.body.rows : [];
-    const data = rows.map(r => ({
-      productId: r.productId,
-      name:      r.name,
-      basePrice: r.basePrice,
-      stock:     r.stock,
-      isNew:     true,
-      dateAdded: new Date()
-    }));
-    const result = await prisma.product.createMany({
-      data,
-      skipDuplicates: true
-    });
-    res.json({ added: result.count });
+    let added = 0;
+    for (const r of rows) {
+      const canon = normalizeName(r.rawName || r.name || '');
+      const created = await prisma.product.create({
+        data: {
+          productId: r.productId,        // текущий hex сразу кладём в продукт
+          rawName:   r.rawName ?? r.name ?? null,
+          canonicalName: canon,
+          name:      r.name ?? (r.rawName ?? ''), // «красивое» имя — как раньше
+          basePrice: r.basePrice,
+          stock:     r.stock,
+          isNew:     true,
+          dateAdded: new Date(),
+          externals: { create: { externalId: r.productId, isPrimary: true } }
+        }
+      });
+      if (created?.id) added++;
+    }
+    res.json({ added });
   }
 );
 
@@ -373,6 +474,8 @@ function mapRow(r) {
   const productId = r.productid ?? null;
   const article   = r.article   ?? null;
   const name      = r.name ?? r.productname ?? '';
+  // для Excel-импорта rawName не всегда есть — если нет, используем пришедшее name
+  const rawName   = r.rawname ?? r.productname ?? r.name ?? null;
 
   /* volume-id: число или строка → приводим к строке */
   const productVolumeIdRaw = r.productvolumeid ?? null;
@@ -430,6 +533,7 @@ function mapRow(r) {
     productId,
     article,
     name,
+    rawName,
     brand,
     type,
     isArchived,
