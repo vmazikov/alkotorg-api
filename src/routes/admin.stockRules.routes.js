@@ -2,6 +2,7 @@
 import { Router }    from 'express';
 import prisma         from '../utils/prisma.js';
 import { authMiddleware, role } from '../middlewares/auth.js';
+import { invalidateStockRulesCache } from '../utils/stockRules.js';
 
 const router = Router();
 
@@ -26,6 +27,7 @@ router.post('/', async (req, res, next) => {
     const rule = await prisma.stockRule.create({
       data: { field, operator, value, label, color, priority }
     });
+    invalidateStockRulesCache();
     res.status(201).json(rule);
   } catch (err) { next(err) }
 });
@@ -39,6 +41,7 @@ router.put('/:id', async (req, res, next) => {
       where: { id },
       data: { field, operator, value, label, color, priority }
     });
+    invalidateStockRulesCache();
     res.json(rule);
   } catch (err) { next(err) }
 });
@@ -47,6 +50,7 @@ router.put('/:id', async (req, res, next) => {
 router.delete('/:id', async (req, res, next) => {
   try {
     await prisma.stockRule.delete({ where: { id: Number(req.params.id) } });
+    invalidateStockRulesCache();
     res.sendStatus(204);
   } catch (err) { next(err) }
 });

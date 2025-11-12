@@ -22,9 +22,50 @@ const router = Router();
  *   …
  * }
  */
+const toArray = value =>
+  value == null
+    ? []
+    : Array.isArray(value)
+      ? value
+      : [value];
+
+const toNumberArray = value =>
+  toArray(value)
+    .map(v => Number(v))
+    .filter(v => !Number.isNaN(v));
+
+const normalizeSelected = (q = {}) => {
+  const multi = field => toArray(q[field]).map(String);
+  const bool =
+    q.inStockOnly === '1' ||
+    q.inStockOnly === 'true' ||
+    q.inStockOnly === true;
+
+  return {
+    search: q.search ?? null,
+    type: q.type ?? null,
+    sort: q.sort ?? null,
+    priceMin: q.priceMin ?? null,
+    priceMax: q.priceMax ?? null,
+    degree: q.degree ?? null,
+    volumes: toNumberArray(q.volumes),
+    brand: multi('brand'),
+    wineColor: multi('wineColor'),
+    sweetnessLevel: multi('sweetnessLevel'),
+    wineType: multi('wineType'),
+    giftPackaging: multi('giftPackaging'),
+    excerpt: multi('excerpt'),
+    taste: multi('taste'),
+    countryOfOrigin: multi('countryOfOrigin'),
+    whiskyType: multi('whiskyType'),
+    inStockOnly: bool,
+  };
+};
+
 router.get('/', async (req, res, next) => {
   try {
     const where = await buildWhere(req.query);
+    const selected = normalizeSelected(req.query);
 
     /* ------------- запросы параллельно -------------------------------- */
     const [
@@ -58,6 +99,7 @@ router.get('/', async (req, res, next) => {
       tastes:          tastes         .map(v => v.taste)           .filter(Boolean).sort(),
       countries:       countries      .map(v => v.countryOfOrigin) .filter(Boolean).sort(),
       whiskyTypes:     whiskyTypes    .map(v => v.whiskyType)      .filter(Boolean).sort(),
+      selected,
     });
   } catch (err) {
     next(err);

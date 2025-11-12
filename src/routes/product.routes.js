@@ -180,10 +180,21 @@ router.get('/', async (req, res, next) => {
       let cursorObj = null;
       try { 
         if (cursor) cursorObj = JSON.parse(cursor); 
-        if (cursorObj?.id)       cursorObj.id       = +cursorObj.id;
-        if (cursorObj?.degree)   cursorObj.degree   = +cursorObj.degree;
-        if (cursorObj?.basePrice)cursorObj.basePrice= +cursorObj.basePrice;
-        if (cursorObj?.volume)    cursorObj.volume    = +cursorObj.volume;
+        if (cursorObj && 'id' in cursorObj) {
+          cursorObj.id = +cursorObj.id;
+        }
+        if (cursorObj && 'degree' in cursorObj) {
+          cursorObj.degree =
+            cursorObj.degree == null ? null : +cursorObj.degree;
+        }
+        if (cursorObj && 'basePrice' in cursorObj) {
+          cursorObj.basePrice =
+            cursorObj.basePrice == null ? null : +cursorObj.basePrice;
+        }
+        if (cursorObj && 'volume' in cursorObj) {
+          cursorObj.volume =
+            cursorObj.volume == null ? null : +cursorObj.volume;
+        }
         if (cursorObj?.name)     cursorObj.name     = String(cursorObj.name); // на всяк.
       } catch { 
         cursorObj = null; 

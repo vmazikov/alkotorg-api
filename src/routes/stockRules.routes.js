@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import prisma from '../utils/prisma.js';
 import { authMiddleware, role as allowRoles } from '../middlewares/auth.js';
+import { invalidateStockRulesCache } from '../utils/stockRules.js';
 
 const router = Router();
 router.use(authMiddleware, allowRoles(['ADMIN']));
@@ -11,14 +12,17 @@ router.get('/',  async (_, res) => {
 });
 router.post('/', async (req, res) => {
   const r = await prisma.stockRule.create({ data: req.body });
+  invalidateStockRulesCache();
   res.json(r);
 });
 router.put('/:id', async (req, res) => {
   const r = await prisma.stockRule.update({ where:{ id:+req.params.id }, data:req.body });
+  invalidateStockRulesCache();
   res.json(r);
 });
 router.delete('/:id', async (req, res) => {
   await prisma.stockRule.delete({ where:{ id:+req.params.id }});
+  invalidateStockRulesCache();
   res.json({ ok:true });
 });
 
