@@ -39,6 +39,9 @@ model User {
   favorites    Favorite[]
   priceSyncLogs PriceSyncLog[] 
   productViews  ProductView[] @relation("UserViews")
+  createdNotifications Notification[]        @relation("NotificationAuthor")
+  notificationReads    NotificationRead[]    @relation("NotificationReadUser")
+  notificationAudienceEntries NotificationAudience[] @relation("NotificationAudienceUser")
 }
 
 model Store {
@@ -241,6 +244,54 @@ model CartItem {
   @@unique([cartId, productId])
 }
 
+model Notification {
+  id          Int                 @id @default(autoincrement())
+  title       String
+  message     String              @db.Text
+  status      NotificationStatus  @default(DRAFT)
+  startsAt    DateTime?
+  expiresAt   DateTime?
+  createdById Int
+  createdBy   User                @relation("NotificationAuthor", fields: [createdById], references: [id])
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+
+  audiences   NotificationAudience[]
+  reads       NotificationRead[]
+
+  @@index([status, startsAt])
+  @@index([startsAt])
+  @@index([expiresAt])
+}
+
+model NotificationAudience {
+  id             Int                        @id @default(autoincrement())
+  notificationId Int
+  notification   Notification               @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+  type           NotificationAudienceType
+  role           Role?
+  userId         Int?
+  user           User?                      @relation("NotificationAudienceUser", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([notificationId, type, role, userId])
+  @@index([type])
+  @@index([role])
+  @@index([userId])
+}
+
+model NotificationRead {
+  id             Int           @id @default(autoincrement())
+  notificationId Int
+  notification   Notification  @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+  userId         Int
+  user           User          @relation("NotificationReadUser", fields: [userId], references: [id], onDelete: Cascade)
+  readAt         DateTime      @default(now())
+
+  @@unique([notificationId, userId])
+  @@index([userId, readAt])
+  @@index([notificationId, readAt])
+}
+
 enum Role {
   ADMIN
   AGENT
@@ -251,4 +302,16 @@ enum Role {
 enum OrderStatus {
   NEW
   DONE
+}
+
+enum NotificationStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum NotificationAudienceType {
+  GLOBAL
+  ROLE
+  USER
 }
