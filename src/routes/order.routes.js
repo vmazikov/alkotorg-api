@@ -9,6 +9,18 @@ router.use(authMiddleware);
 
 const log = (...a) => console.log('[orders]', ...a);
 
+const orderDetailsInclude = {
+  user:  { select: { login: true, fullName: true, agentId: true } },
+  store: {
+    select: {
+      title: true,
+      user: { select: { id: true } },
+      managerId: true,
+    },
+  },
+  items: { include: { product: { select: { name: true, volume: true } } } },
+};
+
 /* ------------------------------------------------------------------
    POST /orders
    Создать заказ, посчитать цены и (неблокирующе) оповестить Telegram-агента
@@ -211,6 +223,182 @@ router.put('/:id/status', async (req, res, next) => {
 });
 
 /* ------------------------------------------------------------------
+   PATCH /orders/:orderId/items/:itemId  (ADMIN, AGENT)
+   Обновить количество позиции в заказе
+-------------------------------------------------------------------*/
+router.patch('/:orderId/items/:itemId', async (req, res, next) => {
+  try {
+    if (!['ADMIN', 'AGENT', 'MANAGER'].includes(req.user.role)) {
+      return res.status(403).json({ error: 'Нет доступа' });
+    }
+
+    const orderId = +req.params.orderId;
+    const itemId = +req.params.itemId;
+    const quantity = Number(req.body.quantity);
+
+    if (!Number.isInteger(quantity) || quantity < 1) {
+      return res.status(400).json({ error: 'quantity должен быть положительным целым' });
+    }
+
+    const order = await prisma.order.findUnique({
+      where: { id: orderId },
+      select: {
+        id: true,
+        status: true,
+        user: { select: { agentId: true } },
+        store: { select: { managerId: true } },
+      },
+    });
+
+    if (!order) {
+      return res.status(404).json({ error: 'Заказ не найден' });
+    }
+    if (order.status === 'DONE') {
+      return res.status(400).json({ error: 'Нельзя редактировать завершённый заказ' });
+    }
+    if (req.user.role === 'AGENT' && order.user.agentId !== req.user.id) {
+      return res.status(403).json({ error: 'Нет доступа к заказу' });
+    }
+    if (req.user.role === 'MANAGER' && order.store.managerId !== req.user.id) {
+      return res.status(403).json({ error: 'Нет доступа к заказу' });
+    }
+
+    const orderItem = await prisma.orderItem.findFirst({
+      where: { id: itemId, orderId },
+      select: { id: true },
+    });
+    if (!orderItem) {
+      return res.status(404).json({ error: 'Позиция не найдена' });
+    }
+
+    await prisma.orderItem.update({
+      where: { id: orderItem.id },
+      data: { quantity },
+    });
+
+    const updatedOrder = await recalcOrderTotalAndFetch(orderId);
+    res.json(updatedOrder);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/* ------------------------------------------------------------------
+   DELETE /orders/:orderId/items/:itemId  (ADMIN, AGENT)
+   Удалить позицию из заказа
+-------------------------------------------------------------------*/
+router.delete('/:orderId/items/:itemId', async (req, res, next) => {
+  try {
+    if (!['ADMIN', 'AGENT', 'MANAGER'].includes(req.user.role)) {
+      return res.status(403).json({ error: 'Нет доступа' });
+    }
+
+    const orderId = +req.params.orderId;
+    const itemId = +req.params.itemId;
+
+    const order = await prisma.order.findUnique({
+      where: { id: orderId },
+      select: {
+        id: true,
+        status: true,
+        user: { select: { agentId: true } },
+        store: { select: { managerId: true } },
+      },
+    });
+
+    if (!order) {
+      return res.status(404).json({ error: 'Заказ не найден' });
+    }
+    if (order.status === 'DONE') {
+      return res.status(400).json({ error: 'Нельзя редактировать завершённый заказ' });
+    }
+    if (req.user.role === 'AGENT' && order.user.agentId !== req.user.id) {
+      return res.status(403).json({ error: 'Нет доступа к заказу' });
+    }
+    if (req.user.role === 'MANAGER' && order.store.managerId !== req.user.id) {
+      return res.status(403).json({ error: 'Нет доступа к заказу' });
+    }
+
+    const orderItem = await prisma.orderItem.findFirst({
+      where: { id: itemId, orderId },
+      select: { id: true },
+    });
+    if (!orderItem) {
+      return res.status(404).json({ error: 'Позиция не найдена' });
+    }
+
+    await prisma.orderItem.delete({ where: { id: orderItem.id } });
+
+    const updatedOrder = await recalcOrderTotalAndFetch(orderId);
+    res.json(updatedOrder);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/* ------------------------------------------------------------------
+   POST /orders/:id/return-to-cart   (USER)
+   Перенести заказ обратно в корзину
+-------------------------------------------------------------------*/
+router.post('/:id/return-to-cart', async (req, res, next) => {
+  try {
+    if (req.user.role !== 'USER') {
+      return res.status(403).json({ error: 'Доступно только покупателям' });
+    }
+
+    const orderId = +req.params.id;
+    const order = await prisma.order.findUnique({
+      where: { id: orderId },
+      select: {
+        id: true,
+        status: true,
+        store: { select: { id: true, userId: true } },
+        items: { select: { productId: true, quantity: true } },
+      },
+    });
+
+    if (!order) {
+      return res.status(404).json({ error: 'Заказ не найден' });
+    }
+    if (order.status === 'DONE') {
+      return res.status(400).json({ error: 'Нельзя редактировать завершённый заказ' });
+    }
+    if (order.store.userId !== req.user.id) {
+      return res.status(403).json({ error: 'Нет доступа к заказу' });
+    }
+
+    await prisma.$transaction(async tx => {
+      const cart = await tx.cart.upsert({
+        where: { userId_storeId: { userId: req.user.id, storeId: order.store.id } },
+        update: {},
+        create: { userId: req.user.id, storeId: order.store.id },
+      });
+
+      await tx.cartItem.deleteMany({ where: { cartId: cart.id } });
+
+      if (order.items.length) {
+        await tx.cartItem.createMany({
+          data: order.items.map(item => ({
+            cartId: cart.id,
+            productId: item.productId,
+            qty: item.quantity,
+          })),
+          skipDuplicates: true,
+        });
+      }
+
+      await tx.orderItem.deleteMany({ where: { orderId } });
+      await tx.order.delete({ where: { id: orderId } });
+    });
+
+    const totalQty = order.items.reduce((acc, item) => acc + item.quantity, 0);
+    res.json({ movedToCart: true, storeId: order.store.id, items: order.items.length, totalQty });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/* ------------------------------------------------------------------
    DELETE /orders/:id      (только ADMIN)
 -------------------------------------------------------------------*/
 router.delete('/:id', async (req, res, next) => {
@@ -228,3 +416,18 @@ router.delete('/:id', async (req, res, next) => {
 });
 
 export default router;
+
+async function recalcOrderTotalAndFetch(orderId) {
+  const items = await prisma.orderItem.findMany({
+    where: { orderId },
+    select: { price: true, quantity: true },
+  });
+
+  const total = items.reduce((acc, item) => acc + (item.price * item.quantity), 0);
+
+  return prisma.order.update({
+    where: { id: orderId },
+    data: { total: +total.toFixed(2) },
+    include: orderDetailsInclude,
+  });
+}
