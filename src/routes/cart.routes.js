@@ -45,6 +45,7 @@ router.get('/', async (req, res, next) => {
               include: {
                 promos: {
                   where: { expiresAt: { gt: new Date() } },
+                  orderBy: { expiresAt: 'desc' },
                   take : 1
                 }
               }
@@ -60,15 +61,17 @@ router.get('/', async (req, res, next) => {
       const p = i.product;
       const qty = i.qty;
 
-      // выбираем «сырую» цену: промо или базовую
-      const raw = p.promos.length
-        ? p.promos[0].promoPrice
-        : p.basePrice;
-
-      // если nonModify=true, не применяем factor
-      const price = p.nonModify
-        ? raw
-        : + (raw * factor).toFixed(2);
+      const activePromo = p.promos[0];
+      const basePrice = p.nonModify
+        ? p.basePrice
+        : +(p.basePrice * factor).toFixed(2);
+      const price = activePromo
+        ? (
+            (activePromo.applyModifier ?? true)
+              ? +(activePromo.promoPrice * factor).toFixed(2)
+              : activePromo.promoPrice
+          )
+        : basePrice;
 
       return {
         productId : p.id,

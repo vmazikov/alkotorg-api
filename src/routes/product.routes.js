@@ -29,10 +29,11 @@ function applyPriceModifier(product, factor) {
     ? product.basePrice
     : fix(product.basePrice * factor);
 
-  const promos = product.promos?.map(pr => ({
-    ...pr,
-    promoPrice: product.nonModify ? pr.promoPrice : fix(pr.promoPrice * factor),
-  })) ?? [];
+  const promos = product.promos?.map(pr => {
+    const shouldModify = pr.applyModifier ?? true;
+    const promoPrice = shouldModify ? fix(pr.promoPrice * factor) : pr.promoPrice;
+    return { ...pr, promoPrice };
+  }) ?? [];
 
   return { ...product, basePrice, promos };
 }
@@ -486,16 +487,7 @@ router.get('/:id', async (req, res, next) => {
       return res.status(404).json({ error: 'Product not found' });
     }
 
-    const modifiedBase = p.nonModify
-      ? p.basePrice
-      : +(p.basePrice * factor).toFixed(2);
-
-    const modifiedPromos = p.promos.map(pr => ({
-      ...pr,
-      promoPrice: p.nonModify
-        ? pr.promoPrice
-        : +(pr.promoPrice * factor).toFixed(2),
-    }));
+    const pricedProduct = applyPriceModifier(p, factor);
 
     const product = {
       id:             p.id,
@@ -508,7 +500,7 @@ router.get('/:id', async (req, res, next) => {
       productVolumeId: p.productVolumeId,
       degree:         p.degree,
       quantityInBox:  p.quantityInBox,
-      basePrice:      modifiedBase,
+      basePrice:      pricedProduct.basePrice,
       img:            p.img,
       stock:          p.stock,
       nonModify:      p.nonModify,
@@ -535,7 +527,7 @@ router.get('/:id', async (req, res, next) => {
       isNew:           p.isNew,
       description:     p.description,
 
-      promos:         modifiedPromos,
+      promos:         pricedProduct.promos,
       createdAt:      p.createdAt,
     };
     res.json(product);

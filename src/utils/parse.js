@@ -11,3 +11,13 @@ export function toInt(v) {
   const num = parseInt(v, 10);
   return Number.isFinite(num) ? num : null;
 }
+
+export function toBool(v, fallback = undefined) {
+  if (v === undefined || v === null || v === '') return fallback;
+  if (typeof v === 'boolean') return v;
+  const normalized = String(v).trim().toLowerCase();
+  if (!normalized) return fallback;
+  if (['true', '1', 'yes', 'y', 'on', 'да'].includes(normalized)) return true;
+  if (['false', '0', 'no', 'n', 'off', 'нет'].includes(normalized)) return false;
+  return fallback;
+}

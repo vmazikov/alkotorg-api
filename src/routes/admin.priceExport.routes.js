@@ -82,6 +82,7 @@ router.get(
             promoPrice: pr.promoPrice,
             comment:    pr.comment,
             expiresAt:  pr.expiresAt,
+            applyModifier: pr.applyModifier,
           })
         )
       );

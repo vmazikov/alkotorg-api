@@ -21,10 +21,11 @@ function applyPriceModifier(product, factor) {
     ? product.basePrice
     : fix(product.basePrice * factor);
 
-  const promos = product.promos?.map(pr => ({
-    ...pr,
-    promoPrice: product.nonModify ? pr.promoPrice : fix(pr.promoPrice * factor),
-  })) ?? [];
+  const promos = product.promos?.map(pr => {
+    const shouldModify = pr.applyModifier ?? true;
+    const promoPrice = shouldModify ? fix(pr.promoPrice * factor) : pr.promoPrice;
+    return { ...pr, promoPrice };
+  }) ?? [];
 
   return { ...product, basePrice, promos };
 }

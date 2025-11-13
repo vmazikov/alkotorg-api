@@ -70,8 +70,17 @@ router.post('/', async (req, res, next) => {
       const p = products.find(x => x.id === productId);
       if (!p) throw new Error(`Product ${productId} not found`);
 
-      const raw   = p.promos.length ? p.promos[0].promoPrice : p.basePrice;
-      const price = p.nonModify ? raw : +(raw * factor).toFixed(2);
+      const activePromo = p.promos[0];
+      const basePrice = p.nonModify
+        ? p.basePrice
+        : +(p.basePrice * factor).toFixed(2);
+      const price = activePromo
+        ? (
+            (activePromo.applyModifier ?? true)
+              ? +(activePromo.promoPrice * factor).toFixed(2)
+              : activePromo.promoPrice
+          )
+        : basePrice;
       total += price * qty;
       return { productId, quantity: qty, price };
     });

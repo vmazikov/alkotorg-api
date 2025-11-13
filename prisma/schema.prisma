@@ -175,6 +175,7 @@ model Promo {
   promoPrice Float
   comment    String?
   expiresAt  DateTime
+  applyModifier Boolean @default(true)
 }
 
 model Favorite {

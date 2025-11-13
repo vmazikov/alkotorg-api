@@ -6,7 +6,7 @@ import crypto            from 'crypto';
 import xlsx              from 'xlsx';
 import prisma            from '../utils/prisma.js';
 import { role }          from '../middlewares/auth.js';
-import { toFloat, toInt }from '../utils/parse.js';
+import { toFloat, toInt, toBool }from '../utils/parse.js';
 import { Buffer } from 'buffer';
 import { normalizeName } from '../utils/strings.js';
 
@@ -521,11 +521,16 @@ function mapRow(r) {
   const combinationsProduct = r.combinationsproduct ?? r.сombinationsproduct ?? null;
   const description    = r.description    ?? null;
 
+  const promoApplyModifier = toBool(r.promoapplymodifier ?? r.promomodifier);
+
   const promo = r.promoprice
     ? {
         promoPrice: toFloat(r.promoprice),
         comment:    r.commentpromo ?? null,
         expiresAt:  r.expiresat ? new Date(r.expiresat) : null,
+        ...(promoApplyModifier === undefined
+          ? {}
+          : { applyModifier: promoApplyModifier }),
       }
     : undefined;
 
@@ -566,4 +571,3 @@ function mapRow(r) {
     promo,
   };
 }
-

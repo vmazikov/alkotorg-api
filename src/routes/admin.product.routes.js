@@ -3,6 +3,7 @@ import { Router } from 'express';
 import prisma from '../utils/prisma.js';
 import { authMiddleware, role } from '../middlewares/auth.js';
 import { normalizeName } from '../utils/strings.js';
+import { toBool } from '../utils/parse.js';
 
 const router = Router();
 
@@ -129,12 +130,14 @@ router.post('/:id/promo', async (req, res, next) => {
   try {
     const productId = Number(req.params.id);
     const { promoPrice, comment, expiresAt } = req.body;
+    const applyModifier = toBool(req.body.applyModifier);
     const promo = await prisma.promo.create({
       data: {
         productId,
         promoPrice: Number(promoPrice),
         comment: comment || null,
         expiresAt: new Date(expiresAt),
+        ...(applyModifier === undefined ? {} : { applyModifier }),
       },
     });
     res.status(201).json(promo);
@@ -148,12 +151,14 @@ router.patch('/:id/promo/:promoId', async (req, res, next) => {
   try {
     const promoId = Number(req.params.promoId);
     const { promoPrice, comment, expiresAt } = req.body;
+    const applyModifier = toBool(req.body.applyModifier);
     const updated = await prisma.promo.update({
       where: { id: promoId },
       data: {
         promoPrice: Number(promoPrice),
         comment: comment || null,
         expiresAt: new Date(expiresAt),
+        ...(applyModifier === undefined ? {} : { applyModifier }),
       },
     });
     res.json(updated);
