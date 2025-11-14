@@ -6,9 +6,10 @@ import { authMiddleware } from '../middlewares/auth.js';
 import buildWhere from '../utils/buildWhere.js';   // ← добавили
 import { makeNextCursor, buildWhereAfter } from '../utils/buildNextCursor.js';
 import { buildImageUrl } from '../utils/imageStorage.js';
+import { prepareSearchQuery } from '../utils/searchQuery.js';
 
 const router = Router();
-let isSimilarityAvailable = true; // отключаем similarity, если нет pg_trgm
+let isSearchVectorAvailable = true;
 
 // Подключаем аутентификацию, чтобы в req.user был текущий пользователь
 router.use(authMiddleware);
@@ -61,16 +62,29 @@ function withImageUrls(product) {
 router.get('/suggest', async (req, res, next) => {
   try {
     const { query } = req.query;
-    if (!query || query.length < 2) return res.json([]);
+    const raw = String(query ?? '').trim();
+    if (!raw || raw.length < 2) return res.json([]);
+
+    const prepared = prepareSearchQuery(raw);
+    const tokens = prepared?.tokens?.length ? prepared.tokens : [raw.toLowerCase()];
+    const likePatterns = tokens.map(token => `%${token}%`);
+    const patternArray = Prisma.sql`ARRAY[${Prisma.join(likePatterns.map(p => Prisma.sql`${p}`))}]::text[]`;
 
     const rows = await prisma.$queryRaw`
       SELECT id, name, type, "countryOfOrigin"
       FROM "Product"
-      WHERE name ILIKE ${'%' + query + '%'}
-        AND "isArchived" = false
-      ORDER BY POSITION(LOWER(${query}) IN LOWER(name))
+      WHERE "isArchived" = false
+        AND (
+          unaccent(name) ILIKE ANY(${patternArray})
+          OR unaccent(coalesce("canonicalName", '')) ILIKE ANY(${patternArray})
+          OR unaccent(coalesce(brand, '')) ILIKE ANY(${patternArray})
+          OR unaccent(coalesce(type, '')) ILIKE ANY(${patternArray})
+        )
+      ORDER BY similarity(unaccent(name), unaccent(${prepared?.normalized ?? raw})) DESC,
+               name ASC
       LIMIT 5
     `;
+
     res.json(rows);
   } catch (e) { next(e); }
 });
@@ -88,44 +102,78 @@ router.get('/search', async (req, res, next) => {
 
     if (!query || query.length < 2) return res.json([]);
 
-    /* точные id ------------------------------------------------------ */
-    const exactIds = await prisma.product.findMany({
-      where : {
-        name: { contains: query, mode: 'insensitive' },
-        isArchived: false,
-      },
-      select: { id:true },
-      take  : 50,
-    }).then(r => r.map(x => x.id));
+    const prepared = prepareSearchQuery(query);
+    if (!prepared) return res.json([]);
 
-    /* похожие id ----------------------------------------------------- */
-    const exclude = exactIds.length
-      ? Prisma.sql`AND id NOT IN (${Prisma.join(exactIds)})`
-      : Prisma.empty;
+    const { normalized, tsQueryText, tokens } = prepared;
 
-    let similarIds = [];
-    if (isSimilarityAvailable) {
+    let exactIds = [];
+    if (isSearchVectorAvailable) {
       try {
-        similarIds = await prisma.$queryRaw`
-          SELECT id
-          FROM "Product"
-          WHERE similarity(name, ${query}) > 0.3
-            AND "isArchived" = false
-            ${exclude}
-          ORDER BY similarity(name, ${query}) DESC
-          LIMIT 50
-        `.then(r => r.map(x => x.id));
+        const tsQuery = Prisma.sql`websearch_to_tsquery('simple', ${tsQueryText})`;
+        const vectorRows = await prisma.$queryRaw`
+          WITH q AS (SELECT ${tsQuery} AS query)
+          SELECT p.id,
+                 ts_rank_cd(p."search_vector", q.query) AS rank,
+                 similarity(unaccent(p.name), unaccent(${normalized})) AS fuzzy
+          FROM q, "Product" p
+          WHERE p."isArchived" = false
+            AND q.query @@ p."search_vector"
+          ORDER BY rank DESC, fuzzy DESC
+          LIMIT 100
+        `;
+        exactIds = vectorRows.map(row => row.id);
       } catch (err) {
-        if (err?.code === 'P2010' || err?.message?.includes('similarity')) {
-          isSimilarityAvailable = false;
-          console.warn('[products/search] similarity() недоступна, отключаем pg_trgm fallback');
+        if (err?.code === '42703' || err?.message?.includes('search_vector')) {
+          isSearchVectorAvailable = false;
+          console.warn('[products/search] search_vector отсутствует, включаем legacy поиск');
         } else {
           throw err;
         }
       }
     }
 
-    const ids = [...exactIds, ...similarIds];
+    if (!isSearchVectorAvailable) {
+      const directRows = await prisma.product.findMany({
+        where : {
+          name: { contains: normalized, mode: 'insensitive' },
+          isArchived: false,
+        },
+        select: { id:true },
+        take  : 100,
+      });
+      exactIds = directRows.map(row => row.id);
+    }
+
+    let fuzzyIds = [];
+    if (tokens.length) {
+      const likePatterns = tokens.map(token => `%${token}%`);
+      const patternArray = Prisma.sql`ARRAY[${Prisma.join(likePatterns.map(p => Prisma.sql`${p}`))}]::text[]`;
+      const exclude = exactIds.length
+        ? Prisma.sql`AND p.id NOT IN (${Prisma.join(exactIds.map(id => Prisma.sql`${id}`))})`
+        : Prisma.empty;
+
+      const fuzzyRows = await prisma.$queryRaw`
+        SELECT p.id
+        FROM "Product" p
+        WHERE p."isArchived" = false
+          ${exclude}
+          AND (
+            unaccent(p.name) ILIKE ANY(${patternArray})
+            OR unaccent(coalesce(p."canonicalName", '')) ILIKE ANY(${patternArray})
+            OR unaccent(coalesce(p.brand, '')) ILIKE ANY(${patternArray})
+            OR unaccent(coalesce(p.type, '')) ILIKE ANY(${patternArray})
+            OR unaccent(coalesce(p."countryOfOrigin", '')) ILIKE ANY(${patternArray})
+          )
+        ORDER BY similarity(unaccent(p.name), unaccent(${normalized})) DESC,
+                 p."isNew" DESC,
+                 p."dateAdded" DESC
+        LIMIT 50
+      `;
+      fuzzyIds = fuzzyRows.map(row => row.id);
+    }
+
+    const ids = [...exactIds, ...fuzzyIds];
     if (!ids.length) return res.json([]);
 
     /* полные карточки + модификатор ------------------------------- */

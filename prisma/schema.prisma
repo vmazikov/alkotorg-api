@@ -131,6 +131,7 @@ model Product {
   @@index([canonicalName])
   externals   ProductExternalId[]
   images      ProductImage[]
+  searchVector Unsupported("tsvector")? @map("search_vector")
 }
 
 model ProductExternalId {
