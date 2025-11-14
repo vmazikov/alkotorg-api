@@ -29,18 +29,18 @@ SET "search_vector" =
   setweight(to_tsvector('simple', unaccent(coalesce(type, ''))), 'C') ||
   setweight(to_tsvector('simple', unaccent(coalesce("countryOfOrigin", ''))), 'D');
 
-CREATE INDEX "Product_search_vector_idx"
+CREATE INDEX IF NOT EXISTS "Product_search_vector_idx"
   ON "Product"
   USING GIN ("search_vector");
 
-CREATE INDEX "Product_name_trgm_idx"
+CREATE INDEX IF NOT EXISTS "Product_name_trgm_idx"
   ON "Product"
   USING GIN ("name" gin_trgm_ops);
 
-CREATE INDEX "Product_brand_trgm_idx"
+CREATE INDEX IF NOT EXISTS "Product_brand_trgm_idx"
   ON "Product"
   USING GIN ("brand" gin_trgm_ops);
 
-CREATE INDEX "Product_type_trgm_idx"
+CREATE INDEX IF NOT EXISTS "Product_type_trgm_idx"
   ON "Product"
   USING GIN ("type" gin_trgm_ops);
