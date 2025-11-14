@@ -21,6 +21,11 @@ const ALLOWED_MIME_TYPES = new Set([
   'image/png',
   'image/webp'
 ]);
+const MIME_EXTENSION_MAP = {
+  'image/jpeg': '.jpg',
+  'image/png': '.png',
+  'image/webp': '.webp',
+};
 
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => {
@@ -84,6 +89,42 @@ async function getProductImages(productId) {
     orderBy: { order: 'asc' }
   });
   return rows.map(formatImage);
+}
+
+async function downloadImageFromUrl(url) {
+  if (!url) throw new Error('URL обязателен');
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error('Некорректный URL');
+  }
+
+  const response = await fetch(parsed.toString(), { redirect: 'follow' });
+  if (!response.ok) {
+    throw new Error(`Не удалось скачать изображение (${response.status})`);
+  }
+
+  const contentType = response.headers.get('content-type')?.split(';')[0]?.trim();
+  if (!contentType || !ALLOWED_MIME_TYPES.has(contentType)) {
+    throw new Error('Недопустимый тип файла. Разрешены JPEG, PNG, WEBP');
+  }
+
+  const contentLength = Number(response.headers.get('content-length') || 0);
+  if (contentLength && contentLength > MAX_FILE_SIZE) {
+    throw new Error('Размер файла превышает 5 МБ');
+  }
+
+  const buffer = Buffer.from(await response.arrayBuffer());
+  if (buffer.length > MAX_FILE_SIZE) {
+    throw new Error('Размер файла превышает 5 МБ');
+  }
+
+  const extFromPath = path.extname(parsed.pathname).toLowerCase();
+  const extension = extFromPath || MIME_EXTENSION_MAP[contentType] || '.jpg';
+  const fileName = `${randomUUID()}${extension}`;
+  await fsp.writeFile(path.join(IMAGE_DIR, fileName), buffer);
+  return fileName;
 }
 
 // Защита: JWT + только ADMIN
@@ -273,6 +314,49 @@ router.post(
     }
   }
 );
+
+/** POST /admin/products/:id/images/by-url — добавить изображение по ссылке */
+router.post('/:id/images/by-url', async (req, res, next) => {
+  const productId = Number(req.params.id);
+  const { url, alt } = req.body ?? {};
+
+  if (!url) {
+    return res.status(400).json({ error: 'url обязателен' });
+  }
+
+  try {
+    const product = await prisma.product.findUnique({
+      where: { id: productId },
+      select: { id: true }
+    });
+    if (!product) {
+      return res.status(404).json({ error: 'Product not found' });
+    }
+
+    const fileName = await downloadImageFromUrl(url);
+
+    const { _max } = await prisma.productImage.aggregate({
+      where: { productId },
+      _max: { order: true },
+    });
+
+    const created = await prisma.productImage.create({
+      data: {
+        productId,
+        fileName,
+        alt: alt ?? null,
+        order: (_max?.order ?? 0) + 1,
+      }
+    });
+
+    res.status(201).json(formatImage(created));
+  } catch (err) {
+    if (err instanceof Error) {
+      return res.status(400).json({ error: err.message });
+    }
+    next(err);
+  }
+});
 
 /** PUT /admin/products/:id/images/reorder — пересортировать изображения */
 router.put('/:id/images/reorder', async (req, res, next) => {
