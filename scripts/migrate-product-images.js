@@ -8,6 +8,8 @@ import { IMAGE_DIR } from '../src/utils/imageStorage.js';
 
 const prisma = new PrismaClient();
 const fsp = fs.promises;
+const PROJECT_ROOT = process.cwd();
+const LEGACY_IMAGE_DIR = path.resolve(PROJECT_ROOT, 'uploads', 'img');
 
 async function ensureDir() {
   await fsp.mkdir(IMAGE_DIR, { recursive: true });
@@ -20,6 +22,29 @@ function sanitizeLocalName(value = '') {
   if (value.startsWith('uploads/img/')) return value.replace('uploads/img/', '');
   if (value.startsWith('uploads/card-img/')) return value.replace('uploads/card-img/', '');
   if (value.startsWith('card-img/')) return value.replace('card-img/', '');
+  return null;
+}
+
+function resolveFilesystemPath(value = '') {
+  if (!value) return null;
+  if (value.startsWith('/img/')) {
+    return path.join(LEGACY_IMAGE_DIR, value.slice(5));
+  }
+  if (value.startsWith('img/')) {
+    return path.join(LEGACY_IMAGE_DIR, value.slice(4));
+  }
+  if (value.startsWith('/uploads/')) {
+    return path.join(PROJECT_ROOT, value.slice(1));
+  }
+  if (value.startsWith('uploads/')) {
+    return path.resolve(PROJECT_ROOT, value);
+  }
+  if (value.startsWith('/card-img/')) {
+    return path.join(PROJECT_ROOT, 'uploads', value.slice(1));
+  }
+  if (value.startsWith('card-img/')) {
+    return path.resolve(PROJECT_ROOT, 'uploads', value);
+  }
   return null;
 }
 
@@ -37,9 +62,12 @@ async function tryReuseLocalFile(value) {
 
 async function copyAbsoluteOrRelative(value) {
   if (!value) return null;
-  const candidate = path.isAbsolute(value)
-    ? value
-    : path.resolve(value);
+  const normalized = resolveFilesystemPath(value);
+  const candidate = normalized
+    ? normalized
+    : path.isAbsolute(value)
+      ? value
+      : path.resolve(value);
   try {
     await fsp.access(candidate);
   } catch {
@@ -76,7 +104,12 @@ async function resolveFile(imgValue) {
   if (reused) return reused;
 
   if (imgValue.startsWith('http://') || imgValue.startsWith('https://')) {
-    return downloadRemote(imgValue);
+    try {
+      return await downloadRemote(imgValue);
+    } catch (err) {
+      console.warn(`⚠ Не удалось скачать ${imgValue}: ${err.message}`);
+      return null;
+    }
   }
 
   return copyAbsoluteOrRelative(imgValue);
