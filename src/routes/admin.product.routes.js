@@ -9,6 +9,7 @@ import { authMiddleware, role } from '../middlewares/auth.js';
 import { normalizeName } from '../utils/strings.js';
 import { toBool } from '../utils/parse.js';
 import { IMAGE_DIR, buildImageUrl } from '../utils/imageStorage.js';
+import { removeBackgroundViaGenApi } from '../utils/genApi.js';
 
 const router = Router();
 const fsp = fs.promises;
@@ -25,6 +26,12 @@ const MIME_EXTENSION_MAP = {
   'image/jpeg': '.jpg',
   'image/png': '.png',
   'image/webp': '.webp',
+};
+const EXTENSION_MIME_MAP = {
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.png': 'image/png',
+  '.webp': 'image/webp',
 };
 
 const storage = multer.diskStorage({
@@ -81,6 +88,29 @@ async function cleanupUploadedFiles(files = []) {
   await Promise.all(
     (files || []).map(file => fsp.unlink(file.path).catch(() => {}))
   );
+}
+
+async function readImageBuffer(fileName) {
+  for (const dir of [IMAGE_DIR, LEGACY_IMAGE_DIR]) {
+    const target = path.join(dir, fileName);
+    try {
+      return await fsp.readFile(target);
+    } catch (err) {
+      if (err.code !== 'ENOENT') throw err;
+    }
+  }
+  return null;
+}
+
+function getMimeTypeFromFileName(fileName) {
+  const ext = path.extname(fileName).toLowerCase();
+  return EXTENSION_MIME_MAP[ext] || 'image/jpeg';
+}
+
+function getExtensionFromMime(mimeType) {
+  if (!mimeType) return '.png';
+  const normalized = mimeType.split(';')[0].trim().toLowerCase();
+  return MIME_EXTENSION_MAP[normalized] || '.png';
 }
 
 async function getProductImages(productId) {
@@ -354,6 +384,63 @@ router.post('/:id/images/by-url', async (req, res, next) => {
     if (err instanceof Error) {
       return res.status(400).json({ error: err.message });
     }
+    next(err);
+  }
+});
+
+/** POST /admin/products/:id/images/:imageId/remove-background — создать версию без фона */
+router.post('/:id/images/:imageId/remove-background', async (req, res, next) => {
+  try {
+    const productId = Number(req.params.id);
+    const imageId = Number(req.params.imageId);
+    const implementation =
+      typeof req.body?.implementation === 'string'
+        ? req.body.implementation.trim() || undefined
+        : undefined;
+
+    const image = await prisma.productImage.findFirst({
+      where: { id: imageId, productId },
+    });
+    if (!image) return res.status(404).json({ error: 'Image not found' });
+
+    const buffer = await readImageBuffer(image.fileName);
+    if (!buffer) {
+      return res.status(404).json({ error: 'Исходное изображение не найдено' });
+    }
+
+    const mimeType = getMimeTypeFromFileName(image.fileName);
+
+    const processed = await removeBackgroundViaGenApi({
+      imageBuffer: buffer,
+      mimeType,
+      fileName: image.fileName,
+      implementation,
+    });
+
+    if (processed.buffer.length > MAX_FILE_SIZE) {
+      throw new Error('Результирующий файл превышает допустимый размер (5 МБ)');
+    }
+
+    const extension = getExtensionFromMime(processed.mimeType);
+    const fileName = `${randomUUID()}${extension}`;
+    await fsp.writeFile(path.join(IMAGE_DIR, fileName), processed.buffer);
+
+    const { _max } = await prisma.productImage.aggregate({
+      where: { productId },
+      _max: { order: true },
+    });
+
+    const created = await prisma.productImage.create({
+      data: {
+        productId,
+        fileName,
+        alt: image.alt ?? null,
+        order: (_max?.order ?? 0) + 1,
+      },
+    });
+
+    res.status(201).json(formatImage(created));
+  } catch (err) {
     next(err);
   }
 });
