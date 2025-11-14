@@ -130,6 +130,7 @@ model Product {
   @@index([isNew])                          // для выборки «новинки»
   @@index([canonicalName])
   externals   ProductExternalId[]
+  images      ProductImage[]
 }
 
 model ProductExternalId {
@@ -142,6 +143,18 @@ model ProductExternalId {
 
   @@unique([externalId])
   @@index([productId])
+}
+
+model ProductImage {
+  id        Int      @id @default(autoincrement())
+  productId Int
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  fileName  String
+  alt       String?
+  order     Int      @default(0)
+  createdAt DateTime @default(now())
+
+  @@index([productId, order])
 }
 
 model ProductView {

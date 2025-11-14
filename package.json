@@ -7,6 +7,7 @@
     "dev": "nodemon src/server.js",
     "start": "node src/server.js",
     "migrate": "prisma migrate dev",
+    "migrate:images": "node scripts/migrate-product-images.js",
     "prisma:generate": "prisma generate",
     "test": "jest --runInBand"
   },

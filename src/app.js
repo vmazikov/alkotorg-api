@@ -30,16 +30,26 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // ─── Статика для изображений ─────────────────────────────────────────
-// Отдаём файлы из папки uploads/img по запросу на /img/<filename>
-app.use('/img', express.static(path.join(__dirname, '..', 'uploads', 'img')));
+// Отдаём файлы из папки uploads/card-img по запросу на /img/<filename>
+app.use('/img', express.static(path.join(__dirname, '..', 'uploads', 'card-img')));
 
 // Заглушка на случай, если файла нет
 app.get('/img/:filename', (req, res) => {
-  const filePath = path.join(__dirname, '..', 'uploads', 'img', req.params.filename);
-  res.sendFile(filePath, err => {
-    if (err) {
-      res.sendFile(path.join(__dirname, '..', 'uploads', 'img', 'placeholder.png'));
-    }
+  const filename = req.params.filename;
+  const currentPath = path.join(__dirname, '..', 'uploads', 'card-img', filename);
+  const legacyPath = path.join(__dirname, '..', 'uploads', 'img', filename);
+  const placeholderPath = path.join(__dirname, '..', 'uploads', 'card-img', 'placeholder.png');
+
+  res.sendFile(currentPath, err => {
+    if (!err) return;
+    res.sendFile(legacyPath, legacyErr => {
+      if (!legacyErr) return;
+      res.sendFile(placeholderPath, placeholderErr => {
+        if (placeholderErr) {
+          res.sendStatus(404);
+        }
+      });
+    });
   });
 });
 

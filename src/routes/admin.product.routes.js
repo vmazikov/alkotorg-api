@@ -1,11 +1,90 @@
 // src/routes/admin.product.routes.js
+import fs from 'fs';
+import { randomUUID } from 'crypto';
+import path from 'path';
 import { Router } from 'express';
+import multer from 'multer';
 import prisma from '../utils/prisma.js';
 import { authMiddleware, role } from '../middlewares/auth.js';
 import { normalizeName } from '../utils/strings.js';
 import { toBool } from '../utils/parse.js';
+import { IMAGE_DIR, buildImageUrl } from '../utils/imageStorage.js';
 
 const router = Router();
+const fsp = fs.promises;
+const LEGACY_IMAGE_DIR = path.resolve(IMAGE_DIR, '..', 'img');
+
+const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
+const MAX_FILES_PER_UPLOAD = 10;
+const ALLOWED_MIME_TYPES = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/webp'
+]);
+
+const storage = multer.diskStorage({
+  destination: (_req, _file, cb) => {
+    fs.mkdir(IMAGE_DIR, { recursive: true }, err => cb(err, IMAGE_DIR));
+  },
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname) || '.jpg';
+    cb(null, `${randomUUID()}${ext}`);
+  }
+});
+
+const imageUpload = multer({
+  storage,
+  limits: { fileSize: MAX_FILE_SIZE, files: MAX_FILES_PER_UPLOAD },
+  fileFilter: (_req, file, cb) => {
+    if (!ALLOWED_MIME_TYPES.has(file.mimetype)) {
+      cb(new Error('Недопустимый тип файла. Разрешены только JPEG, PNG или WEBP'));
+    } else {
+      cb(null, true);
+    }
+  }
+});
+
+const formatImage = image => ({
+  id: image.id,
+  alt: image.alt,
+  order: image.order,
+  fileName: image.fileName,
+  url: buildImageUrl(image.fileName),
+  createdAt: image.createdAt
+});
+
+async function deleteFileSafe(fileName) {
+  if (!fileName) return;
+  const candidateDirs = [IMAGE_DIR, LEGACY_IMAGE_DIR];
+
+  for (const dir of candidateDirs) {
+    const target = path.join(dir, fileName);
+    try {
+      await fsp.unlink(target);
+      return;
+    } catch (err) {
+      if (err.code === 'ENOENT') {
+        continue;
+      }
+      console.warn(`Failed to remove image ${fileName} from ${dir}:`, err.message);
+      return;
+    }
+  }
+}
+
+async function cleanupUploadedFiles(files = []) {
+  await Promise.all(
+    (files || []).map(file => fsp.unlink(file.path).catch(() => {}))
+  );
+}
+
+async function getProductImages(productId) {
+  const rows = await prisma.productImage.findMany({
+    where: { productId },
+    orderBy: { order: 'asc' }
+  });
+  return rows.map(formatImage);
+}
 
 // Защита: JWT + только ADMIN
 router.use(authMiddleware);
@@ -20,16 +99,19 @@ router.get('/', async (req, res, next) => {
     const includePromo = req.query.withPromo === 'true';
     const productsRaw = await prisma.product.findMany({
       orderBy: { id: 'asc' },
-      include: includePromo
-        ? { promos: true }
-        : {},
+      include: {
+        ...(includePromo ? { promos: true } : {}),
+        images: { orderBy: { order: 'asc' } }
+      },
     });
     const products = productsRaw.map(p => {
       const lastPromo = (p.promos?.length)
         ? p.promos[p.promos.length - 1]
         : null;
-      const { promos, ...rest } = p;
-      return { ...rest, promo: lastPromo };
+      const { promos, images, ...rest } = p;
+      const formattedImages = images.map(formatImage);
+      const cover = formattedImages[0]?.url ?? rest.img ?? null;
+      return { ...rest, img: cover, promo: lastPromo, images: formattedImages };
     });
     res.json(products);
   } catch (err) {
@@ -110,6 +192,10 @@ router.patch('/:id/unarchive', async (req, res, next) => {
 router.delete('/:id', async (req, res, next) => {
   try {
     const id = Number(req.params.id);
+    const existingImages = await prisma.productImage.findMany({
+      where: { productId: id },
+      select: { fileName: true }
+    });
 
     // Удаляем все связанные записи в нужном порядке
     await prisma.$transaction([
@@ -118,6 +204,154 @@ router.delete('/:id', async (req, res, next) => {
       prisma.promo.deleteMany({ where: { productId: id } }),
       prisma.product.delete({ where: { id } }),
     ]);
+
+    await Promise.all(existingImages.map(img => deleteFileSafe(img.fileName)));
+    res.status(204).end();
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** GET /admin/products/:id/images — список всех изображений товара */
+router.get('/:id/images', async (req, res, next) => {
+  try {
+    const productId = Number(req.params.id);
+    const product = await prisma.product.findUnique({
+      where: { id: productId },
+      select: { id: true }
+    });
+    if (!product) return res.status(404).json({ error: 'Product not found' });
+
+    const images = await getProductImages(productId);
+    res.json(images);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** POST /admin/products/:id/images — загрузка изображений */
+router.post(
+  '/:id/images',
+  imageUpload.array('images', MAX_FILES_PER_UPLOAD),
+  async (req, res, next) => {
+    const productId = Number(req.params.id);
+    try {
+      if (!req.files?.length) {
+        return res.status(400).json({ error: 'Файлы не получены' });
+      }
+
+      const product = await prisma.product.findUnique({
+        where: { id: productId },
+        select: { id: true }
+      });
+      if (!product) {
+        await cleanupUploadedFiles(req.files);
+        return res.status(404).json({ error: 'Product not found' });
+      }
+
+      const { _max } = await prisma.productImage.aggregate({
+        where: { productId },
+        _max: { order: true }
+      });
+      const startOrder = (_max?.order ?? 0) + 1;
+
+      const payloads = req.files.map((file, idx) => ({
+        productId,
+        fileName: file.filename,
+        alt: file.originalname,
+        order: startOrder + idx,
+      }));
+
+      const created = await prisma.$transaction(
+        payloads.map(data => prisma.productImage.create({ data }))
+      );
+
+      res.status(201).json(created.map(formatImage));
+    } catch (err) {
+      await cleanupUploadedFiles(req.files);
+      next(err);
+    }
+  }
+);
+
+/** PUT /admin/products/:id/images/reorder — пересортировать изображения */
+router.put('/:id/images/reorder', async (req, res, next) => {
+  try {
+    const productId = Number(req.params.id);
+    const ids = Array.isArray(req.body.ids)
+      ? req.body.ids.map(Number).filter(Number.isInteger)
+      : [];
+
+    if (!ids.length) {
+      return res.status(400).json({ error: 'ids должны быть непустым массивом чисел' });
+    }
+
+    const existing = await prisma.productImage.findMany({
+      where: { productId },
+      select: { id: true }
+    });
+    const existingIds = new Set(existing.map(img => img.id));
+
+    if (ids.some(id => !existingIds.has(id)) || existing.length !== ids.length) {
+      return res.status(400).json({ error: 'Список ids должен содержать все изображения товара' });
+    }
+
+    await prisma.$transaction(
+      ids.map((imageId, idx) =>
+        prisma.productImage.update({
+          where: { id: imageId },
+          data: { order: idx + 1 }
+        })
+      )
+    );
+
+    const images = await getProductImages(productId);
+    res.json(images);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** PATCH /admin/products/:id/images/:imageId — обновить подпись */
+router.patch('/:id/images/:imageId', async (req, res, next) => {
+  try {
+    const productId = Number(req.params.id);
+    const imageId = Number(req.params.imageId);
+    const alt = req.body.alt;
+
+    if (alt === undefined) {
+      return res.status(400).json({ error: 'alt обязателен' });
+    }
+
+    const image = await prisma.productImage.findFirst({
+      where: { id: imageId, productId },
+    });
+    if (!image) return res.status(404).json({ error: 'Image not found' });
+
+    const updated = await prisma.productImage.update({
+      where: { id: imageId },
+      data: { alt },
+    });
+
+    res.json(formatImage(updated));
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** DELETE /admin/products/:id/images/:imageId — удалить изображение */
+router.delete('/:id/images/:imageId', async (req, res, next) => {
+  try {
+    const productId = Number(req.params.id);
+    const imageId = Number(req.params.imageId);
+
+    const image = await prisma.productImage.findFirst({
+      where: { id: imageId, productId },
+    });
+    if (!image) return res.status(404).json({ error: 'Image not found' });
+
+    await prisma.productImage.delete({ where: { id: imageId } });
+    await deleteFileSafe(image.fileName);
 
     res.status(204).end();
   } catch (err) {

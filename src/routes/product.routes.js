@@ -5,6 +5,7 @@ import { Prisma } from '@prisma/client';
 import { authMiddleware } from '../middlewares/auth.js';
 import buildWhere from '../utils/buildWhere.js';   // ← добавили
 import { makeNextCursor, buildWhereAfter } from '../utils/buildNextCursor.js';
+import { buildImageUrl } from '../utils/imageStorage.js';
 
 const router = Router();
 let isSimilarityAvailable = true; // отключаем similarity, если нет pg_trgm
@@ -36,6 +37,21 @@ function applyPriceModifier(product, factor) {
   }) ?? [];
 
   return { ...product, basePrice, promos };
+}
+
+const mapImages = (images = []) =>
+  (images ?? []).map(img => ({
+    id: img.id,
+    alt: img.alt,
+    order: img.order,
+    url: buildImageUrl(img.fileName),
+  }));
+
+function withImageUrls(product) {
+  if (!product) return product;
+  const images = mapImages(product.images);
+  const cover = images[0]?.url ?? (product.img ?? null);
+  return { ...product, images, img: cover };
 }
 /* ------------------------------------------------------------------
    GET /products/suggest?query=...
@@ -119,7 +135,10 @@ router.get('/search', async (req, res, next) => {
         id: { in: ids },
         isArchived: false,
       },
-      include: { promos:{ where:{ expiresAt:{ gt:new Date() } } } },
+      include: {
+        promos:{ where:{ expiresAt:{ gt:new Date() } } },
+        images: { orderBy: { order: 'asc' } },
+      },
     });
 
     const map = Object.fromEntries(
@@ -128,7 +147,8 @@ router.get('/search', async (req, res, next) => {
 
     const ordered = ids
       .map(id => map[id])
-      .filter(Boolean);
+      .filter(Boolean)
+      .map(withImageUrls);
 
     res.json(ordered);
   } catch (e) { next(e); }
@@ -244,11 +264,14 @@ router.get('/', async (req, res, next) => {
         take: +limit,
         include: {
           promos: { where: { expiresAt: { gt: new Date() } } },
+          images: { orderBy: { order: 'asc' } },
         },
       });
 
     /* ────────── модифицируем цены ----------------------------------------- */
-    const items = products.map(p => applyPriceModifier(p, factor));
+    const items = products
+      .map(p => applyPriceModifier(p, factor))
+      .map(withImageUrls);
 
     /* ────────── курсор следующей страницы --------------------------------- */
     // если есть следующая страница — сериализуем курсор в JSON
@@ -335,7 +358,10 @@ router.get('/:id/related', async (req, res, next) => {
 
     const products = await prisma.product.findMany({
       where  : { id: { in: ids } },
-      include: { promos: { where: { expiresAt: { gt: new Date() } } } },
+      include: {
+        promos: { where: { expiresAt: { gt: new Date() } } },
+        images: { orderBy: { order: 'asc' } },
+      },
     });
 
     const byId   = new Map(products.map(p => [p.id, p]));
@@ -343,7 +369,9 @@ router.get('/:id/related', async (req, res, next) => {
 
     /* ────────────────── 5. модификация цен под пользователя ────────────────── */
     const factor   = await getUserFactor(req.user.id);
-    const related  = sorted.map(p => applyPriceModifier(p, factor));
+    const related  = sorted
+      .map(p => applyPriceModifier(p, factor))
+      .map(withImageUrls);
 
     res.json(related);
   } catch (err) {
@@ -400,11 +428,15 @@ router.get('/recent', async (req, res, next) => {
       },
       include: {
         promos: { where:{ expiresAt:{ gt:new Date() } } },
+        images: { orderBy: { order: 'asc' } },
       },
     });
 
     const byId = new Map(
-      products.map(p => [p.id, applyPriceModifier(p, factor)])
+      products
+        .map(p => applyPriceModifier(p, factor))
+        .map(withImageUrls)
+        .map(p => [p.id, p])
     );
     res.json(ids.map(id => byId.get(id)).filter(Boolean));
   } catch (e) { next(e); }
@@ -449,11 +481,15 @@ router.get('/ordered', async (req, res, next) => {
       },
       include: {
         promos: { where:{ expiresAt:{ gt:new Date() } } },
+        images: { orderBy: { order: 'asc' } },
       },
     });
 
     const byId = new Map(
-      products.map(p => [p.id, applyPriceModifier(p, factor)])
+      products
+        .map(p => applyPriceModifier(p, factor))
+        .map(withImageUrls)
+        .map(p => [p.id, p])
     );
     res.json(ids.map(id => byId.get(id)).filter(Boolean));
   } catch (e) { next(e); }
@@ -480,6 +516,7 @@ router.get('/:id', async (req, res, next) => {
           where:   { expiresAt: { gt: new Date() } },
           orderBy: { expiresAt: 'desc' },
         },
+        images: { orderBy: { order: 'asc' } },
       },
     });
 
@@ -488,6 +525,9 @@ router.get('/:id', async (req, res, next) => {
     }
 
     const pricedProduct = applyPriceModifier(p, factor);
+
+    const images = mapImages(p.images);
+    const cover = images[0]?.url ?? (p.img ?? null);
 
     const product = {
       id:             p.id,
@@ -501,7 +541,7 @@ router.get('/:id', async (req, res, next) => {
       degree:         p.degree,
       quantityInBox:  p.quantityInBox,
       basePrice:      pricedProduct.basePrice,
-      img:            p.img,
+      img:            cover,
       stock:          p.stock,
       nonModify:      p.nonModify,
       isArchived:     p.isArchived,
@@ -526,7 +566,7 @@ router.get('/:id', async (req, res, next) => {
       excerpt:         p.excerpt,
       isNew:           p.isNew,
       description:     p.description,
-
+      images,
       promos:         pricedProduct.promos,
       createdAt:      p.createdAt,
     };

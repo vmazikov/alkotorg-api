@@ -2,6 +2,7 @@
 import { Router }         from 'express';
 import prisma             from '../utils/prisma.js';
 import { authMiddleware } from '../middlewares/auth.js';
+import { buildImageUrl }  from '../utils/imageStorage.js';
 
 const router = Router();
 router.use(authMiddleware);
@@ -47,7 +48,8 @@ router.get('/', async (req, res, next) => {
                   where: { expiresAt: { gt: new Date() } },
                   orderBy: { expiresAt: 'desc' },
                   take : 1
-                }
+                },
+                images: { orderBy: { order: 'asc' } },
               }
             }
           },
@@ -73,12 +75,21 @@ router.get('/', async (req, res, next) => {
           )
         : basePrice;
 
+      const images = (p.images ?? []).map(img => ({
+        id: img.id,
+        alt: img.alt,
+        order: img.order,
+        url: buildImageUrl(img.fileName),
+      }));
+      const cover = images[0]?.url ?? (p.img ?? null);
+
       return {
         productId : p.id,
         name      : p.name,
         volume    : p.volume,
         degree    : p.degree,
-        img       : p.img,          // ① картинка
+        img       : cover,          // ① картинка
+        images,
         article   : p.article,      // ② если нужен артикул
         qty,
         price,                              // цена за штуку уже с модификатором
