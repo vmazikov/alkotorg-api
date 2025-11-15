@@ -10,6 +10,7 @@ import stockRulesRouter  from './admin.stockRules.routes.js'
 import promoRoutes       from './admin.promo.routes.js'
 import priceExportRouter from './admin.priceExport.routes.js'
 import notificationsRouter from './admin.notification.routes.js'
+import mobileagentOrdersRouter from './admin.mobileagent-orders.routes.js'
 
 const router = Router()
 
@@ -64,6 +65,12 @@ router.use(
   '/notifications',
   role(['ADMIN']),
   notificationsRouter
+)
+// /admin/mobileagent-orders/* доступно ADMIN и AGENT
+router.use(
+  '/mobileagent-orders',
+  role(['ADMIN', 'AGENT']),
+  mobileagentOrdersRouter
 )
 
 // /admin/promos/* доступно только ADMIN
