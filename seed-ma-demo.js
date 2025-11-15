@@ -6,6 +6,8 @@ const AGENT_HEX = '07d2dbdf5fb4924fb6074d71646c5e92'; // пример
 const SHOP_HEX  = '56f704e2fa4e7c449ca53efd8dc0af29';
 const PROD1_HEX = '1b9be2572d4880b43b33305579575f69';
 const PROD2_HEX = '10f6e77d5932d24b8b8a00e61a661b50';
+const article1 = 'DEMO-ART-001';
+const article2 = 'DEMO-ART-002';
 
 async function main() {
   // 1) агент
@@ -51,13 +53,13 @@ async function main() {
   // 4) товары (важно: Product.productId = MA hex)
   const p1 = await prisma.product.upsert({
     where: { productId: PROD1_HEX },
-    update: { basePrice: 100, stock: 100 },
-    create: { productId: PROD1_HEX, name: 'Товар #1', basePrice: 100, stock: 100 }
+    update: { basePrice: 100, stock: 100, article: article1 },
+    create: { productId: PROD1_HEX, name: 'Товар #1', basePrice: 100, stock: 100, article: article1 }
   });
   const p2 = await prisma.product.upsert({
     where: { productId: PROD2_HEX },
-    update: { basePrice: 250, stock: 50 },
-    create: { productId: PROD2_HEX, name: 'Товар #2', basePrice: 250, stock: 50 }
+    update: { basePrice: 250, stock: 50, article: article2 },
+    create: { productId: PROD2_HEX, name: 'Товар #2', basePrice: 250, stock: 50, article: article2 }
   });
 
   // 5) заказ NEW с позициями

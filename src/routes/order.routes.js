@@ -3,11 +3,21 @@ import { Router }         from 'express';
 import prisma             from '../utils/prisma.js';
 import { authMiddleware } from '../middlewares/auth.js';
 import { notifyAgent }    from '../utils/teleg.js';
+import {
+  createOrderLogEntry,
+  detectOrderLogSource,
+  OrderLogAction,
+} from '../utils/orderLog.js';
 
 const router = Router();
 router.use(authMiddleware);
 
 const log = (...a) => console.log('[orders]', ...a);
+
+const orderLogsInclude = {
+  orderBy: { createdAt: 'asc' },
+  include: { actor: { select: { id: true, login: true, fullName: true, role: true } } },
+};
 
 const orderDetailsInclude = {
   user:  { select: { login: true, fullName: true, agentId: true } },
@@ -19,6 +29,7 @@ const orderDetailsInclude = {
     },
   },
   items: { include: { product: { select: { name: true, volume: true } } } },
+  logs: orderLogsInclude,
 };
 
 /* ------------------------------------------------------------------
@@ -111,8 +122,23 @@ router.post('/', async (req, res, next) => {
         items: {
           include: { product: { select: { name: true, volume: true } } },
         },
+        logs: orderLogsInclude,
       },
     });
+
+    const source = detectOrderLogSource(req.user.role);
+    const createdLog = await createOrderLogEntry({
+      orderId: order.id,
+      action: OrderLogAction.CREATED,
+      source,
+      actorId: req.user.id,
+      actorRole: req.user.role,
+      meta: {
+        total,
+        itemCount: createItems.length,
+      },
+    });
+    order.logs = [createdLog];
 
     // 5) Отдаём ответ СРАЗУ — заказ создан
     res.status(201).json(order);
@@ -172,6 +198,7 @@ router.get('/', async (req, res, next) => {
           },
         },
         items: { include: { product: { select: { name: true, volume: true } } } },
+        logs: orderLogsInclude,
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -189,11 +216,7 @@ router.get('/:id', async (req, res, next) => {
   try {
     const order = await prisma.order.findUnique({
       where: { id: +req.params.id },
-      include: {
-        user:  { select: { login: true, fullName: true, agentId: true } },
-        store: { select: { title: true, user: { select: { id: true } }, managerId: true } },
-        items: { include: { product: { select: { name: true, volume: true } } } },
-      },
+      include: orderDetailsInclude,
     });
     if (!order) return res.status(404).json({ error: 'Not found' });
 
@@ -221,10 +244,34 @@ router.put('/:id/status', async (req, res, next) => {
     if (!['NEW', 'DONE'].includes(status)) {
       return res.status(400).json({ error: 'Недопустимый статус' });
     }
-    const updated = await prisma.order.update({
+    const existing = await prisma.order.findUnique({
       where: { id: +req.params.id },
-      data: { status, agentComment: comment },
+      select: { id: true, status: true },
     });
+    if (!existing) {
+      return res.status(404).json({ error: 'Заказ не найден' });
+    }
+
+    const updated = await prisma.order.update({
+      where: { id: existing.id },
+      data: { status, agentComment: comment },
+      include: orderDetailsInclude,
+    });
+
+    const logEntry = await createOrderLogEntry({
+      orderId: updated.id,
+      action: OrderLogAction.STATUS_CHANGED,
+      source: detectOrderLogSource(req.user.role),
+      actorId: req.user.id,
+      actorRole: req.user.role,
+      meta: {
+        from: existing.status,
+        to: status,
+        comment: comment || undefined,
+      },
+    });
+    updated.logs = [...(updated.logs || []), logEntry];
+
     res.json(updated);
   } catch (err) {
     next(err);
@@ -274,7 +321,7 @@ router.patch('/:orderId/items/:itemId', async (req, res, next) => {
 
     const orderItem = await prisma.orderItem.findFirst({
       where: { id: itemId, orderId },
-      select: { id: true },
+      select: { id: true, quantity: true, productId: true },
     });
     if (!orderItem) {
       return res.status(404).json({ error: 'Позиция не найдена' });
@@ -285,7 +332,22 @@ router.patch('/:orderId/items/:itemId', async (req, res, next) => {
       data: { quantity },
     });
 
+    const logEntry = await createOrderLogEntry({
+      orderId,
+      action: OrderLogAction.ITEM_UPDATED,
+      source: detectOrderLogSource(req.user.role),
+      actorId: req.user.id,
+      actorRole: req.user.role,
+      meta: {
+        itemId: orderItem.id,
+        productId: orderItem.productId,
+        from: orderItem.quantity,
+        to: quantity,
+      },
+    });
+
     const updatedOrder = await recalcOrderTotalAndFetch(orderId);
+    updatedOrder.logs = [...(updatedOrder.logs || []), logEntry];
     res.json(updatedOrder);
   } catch (err) {
     next(err);
@@ -330,7 +392,7 @@ router.delete('/:orderId/items/:itemId', async (req, res, next) => {
 
     const orderItem = await prisma.orderItem.findFirst({
       where: { id: itemId, orderId },
-      select: { id: true },
+      select: { id: true, quantity: true, productId: true },
     });
     if (!orderItem) {
       return res.status(404).json({ error: 'Позиция не найдена' });
@@ -338,7 +400,21 @@ router.delete('/:orderId/items/:itemId', async (req, res, next) => {
 
     await prisma.orderItem.delete({ where: { id: orderItem.id } });
 
+    const logEntry = await createOrderLogEntry({
+      orderId,
+      action: OrderLogAction.ITEM_REMOVED,
+      source: detectOrderLogSource(req.user.role),
+      actorId: req.user.id,
+      actorRole: req.user.role,
+      meta: {
+        itemId: orderItem.id,
+        productId: orderItem.productId,
+        quantity: orderItem.quantity,
+      },
+    });
+
     const updatedOrder = await recalcOrderTotalAndFetch(orderId);
+    updatedOrder.logs = [...(updatedOrder.logs || []), logEntry];
     res.json(updatedOrder);
   } catch (err) {
     next(err);

@@ -7,6 +7,11 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 
 import prisma from '../utils/prisma.js';
+import {
+  createOrderLogEntry,
+  OrderLogAction,
+  OrderLogSource,
+} from '../utils/orderLog.js';
 
 const router = express.Router();
 const upload = multer({ dest: 'uploads/' });
@@ -177,7 +182,7 @@ router.post(
       // 4) магазины
       const stores = await prisma.store.findMany({
         where: { maShopId: { not: null } },
-        select: { id: true, maShopId: true, title: true, userId: true },
+        select: { id: true, maShopId: true, title: true, userId: true, agentId: true },
       });
       const storeByMa = new Map();
       for (const s of stores) {
@@ -288,7 +293,7 @@ router.post('/commit', async (req, res) => {
     // магазины
     const stores = await prisma.store.findMany({
       where: { maShopId: { not: null } },
-      select: { id: true, maShopId: true, title: true, userId: true },
+      select: { id: true, maShopId: true, title: true, userId: true, agentId: true },
     });
     const storeByMa = new Map();
     for (const s of stores) {
@@ -447,15 +452,14 @@ router.post('/commit', async (req, res) => {
       const note = inv.Note || null;
       const dtRaw = inv.InvoiceDateTime;
       const dt = dtRaw ? new Date(dtRaw) : new Date();
+      const itemsTotal = itemsData.reduce((s, i) => s + i.price * i.quantity, 0);
+      const finalTotal = amount > 0 ? amount : itemsTotal;
 
       const order = await prisma.order.create({
         data: {
           storeId: store.id,
           userId: store.userId || currentAdminId,
-          total:
-            amount > 0
-              ? amount
-              : itemsData.reduce((s, i) => s + i.price * i.quantity, 0),
+          total: finalTotal,
           status: 'DONE',
           agentComment: note ? String(note).slice(0, 500) : null,
           maInvoiceIdHex: maHex,
@@ -466,6 +470,21 @@ router.post('/commit', async (req, res) => {
           },
         },
         select: { id: true },
+      });
+
+      const actorId = store.agentId || currentAdminId;
+      const actorRole = store.agentId ? 'AGENT' : req.user.role;
+      await createOrderLogEntry({
+        orderId: order.id,
+        action: OrderLogAction.CREATED,
+        source: OrderLogSource.MOBILE_AGENT,
+        actorId,
+        actorRole,
+        meta: {
+          maInvoiceIdHex: maHex,
+          total: finalTotal,
+          itemCount: itemsData.length,
+        },
       });
 
       created.push({ maInvoiceIdHex: maHex, orderId: order.id });

@@ -42,6 +42,7 @@ model User {
   createdNotifications Notification[]        @relation("NotificationAuthor")
   notificationReads    NotificationRead[]    @relation("NotificationReadUser")
   notificationAudienceEntries NotificationAudience[] @relation("NotificationAudienceUser")
+  orderLogs    OrderLog[] @relation("OrderLogActor")
 }
 
 model Store {
@@ -219,6 +220,7 @@ model Order {
 
   items        OrderItem[]
   createdAt    DateTime    @default(now())
+  logs         OrderLog[]
 
   // учёт интеграции с MA
   maInvoiceIdHex String?
@@ -317,6 +319,37 @@ enum Role {
 enum OrderStatus {
   NEW
   DONE
+}
+
+model OrderLog {
+  id        Int           @id @default(autoincrement())
+  orderId   Int
+  order     Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  action    OrderLogAction
+  source    OrderLogSource
+  actorId   Int?
+  actor     User?         @relation("OrderLogActor", fields: [actorId], references: [id])
+  actorRole Role?
+  meta      Json?
+  createdAt DateTime      @default(now())
+
+  @@index([orderId, createdAt])
+  @@index([actorId])
+}
+
+enum OrderLogAction {
+  CREATED
+  STATUS_CHANGED
+  ITEM_UPDATED
+  ITEM_REMOVED
+  RETURNED_TO_CART
+  ORDER_DELETED
+}
+
+enum OrderLogSource {
+  SITE
+  ADMIN_PANEL
+  MOBILE_AGENT
 }
 
 enum NotificationStatus {
