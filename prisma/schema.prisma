@@ -8,138 +8,137 @@ generator client {
 }
 
 model User {
-  id            Int      @id @default(autoincrement())
-  login         String   @unique
-  phone         String   @unique
+  id            Int     @id @default(autoincrement())
+  login         String  @unique
+  phone         String  @unique
   fullName      String?
   passwordHash  String
-  role          Role     @default(USER)
-  priceModifier Float    @default(0)
+  role          Role    @default(USER)
+  priceModifier Float   @default(0)
 
   // связь «клиент → агент»
-  agent        User?    @relation("AgentClients", fields: [agentId], references: [id])
-  clients      User[]   @relation("AgentClients")
-  agentId      Int?
+  agent   User?  @relation("AgentClients", fields: [agentId], references: [id])
+  clients User[] @relation("AgentClients")
+  agentId Int?
 
-  telegramId   String?  @unique
+  telegramId String? @unique
 
   // магазины, в которых он покупатель
-  stores       Store[]  
+  stores      Store[]
   // магазины, за которые он как агент отвечает
-  agentStores  Store[]  @relation("AgentStores")
+  agentStores Store[] @relation("AgentStores")
 
   // менеджер одного магазина
-  storeManaged Store?   @relation("StoreManager")
+  storeManaged Store? @relation("StoreManager")
 
   // только у агентов заполняем (nullable + unique — ОК)
-  maAgentId     String?  @unique
+  maAgentId String? @unique
 
-  orders       Order[]
-  createdAt    DateTime @default(now())
-  favorites    Favorite[]
-  priceSyncLogs PriceSyncLog[] 
-  productViews  ProductView[] @relation("UserViews")
-  createdNotifications Notification[]        @relation("NotificationAuthor")
-  notificationReads    NotificationRead[]    @relation("NotificationReadUser")
+  orders                      Order[]
+  createdAt                   DateTime               @default(now())
+  favorites                   Favorite[]
+  priceSyncLogs               PriceSyncLog[]
+  productViews                ProductView[]          @relation("UserViews")
+  createdNotifications        Notification[]         @relation("NotificationAuthor")
+  notificationReads           NotificationRead[]     @relation("NotificationReadUser")
   notificationAudienceEntries NotificationAudience[] @relation("NotificationAudienceUser")
-  orderLogs    OrderLog[] @relation("OrderLogActor")
+  orderLogs                   OrderLog[]             @relation("OrderLogActor")
 }
 
 model Store {
-  id         Int      @id @default(autoincrement())
-  title      String
-  address    String
+  id      Int    @id @default(autoincrement())
+  title   String
+  address String
 
   // владелец (клиент)
-  userId     Int
-  user       User     @relation(fields: [userId], references: [id])
+  userId Int
+  user   User @relation(fields: [userId], references: [id])
 
   // агент, к которому привязан магазин
-  agentId    Int?
-  agent      User?    @relation("AgentStores", fields: [agentId], references: [id])
+  agentId Int?
+  agent   User? @relation("AgentStores", fields: [agentId], references: [id])
 
   // менеджер этого магазина
-  managerId  Int?     @unique
-  manager    User?    @relation("StoreManager", fields: [managerId], references: [id])
+  managerId Int?  @unique
+  manager   User? @relation("StoreManager", fields: [managerId], references: [id])
 
   // MA ShopID (nullable + unique — ОК)
-  maShopId   String? @unique
+  maShopId String? @unique
 
-  orders     Order[]
+  orders Order[]
 }
 
 model StockRule {
-  id         Int     @id @default(autoincrement())
-  priceMax   Int     // верхняя граница цены, ₽  (NULL = ∞)
-  stockMax   Int     // верхняя граница остатка  (NULL = ∞)
-  label      String  // «Нет в наличии», «Товара мало», …
-  color      String  // Tailwind-класс, напр. bg-rose-600
-  rank       Int     // порядок применения (меньше — раньше)
+  id       Int    @id @default(autoincrement())
+  priceMax Int // верхняя граница цены, ₽  (NULL = ∞)
+  stockMax Int // верхняя граница остатка  (NULL = ∞)
+  label    String // «Нет в наличии», «Товара мало», …
+  color    String // Tailwind-класс, напр. bg-rose-600
+  rank     Int // порядок применения (меньше — раньше)
 }
 
 model Product {
-  id            Int       @id @default(autoincrement())
+  id              Int     @id @default(autoincrement())
   // текущий «актуальный» внешний hex (MobileAgent). Больше НЕ уникальный
-  productId     String?
+  productId       String?
   // «сырое» имя из внешней БД (для сравнения/синхронизации)
-  rawName       String?
+  rawName         String?
   // нормализованное имя (для матчей при смене hex)
-  canonicalName String?
-  article       String?   @unique
+  canonicalName   String?
+  article         String? @unique
   productVolumeId String?
-  name          String
-  brand         String?
-  type          String?
-  volume        Float?    // ранее было String
-  degree        Float?
-  quantityInBox Int?
-  basePrice     Float
-  img           String?
-  stock         Int       @default(0)
-  nonModify     Boolean   @default(false)
-  isArchived    Boolean   @default(false)
+  name            String
+  brand           String?
+  type            String?
+  volume          Float? // ранее было String
+  degree          Float?
+  quantityInBox   Int?
+  basePrice       Float
+  img             String?
+  stock           Int     @default(0)
+  nonModify       Boolean @default(false)
+  isArchived      Boolean @default(false)
 
-  bottleType     String?
-  countryOfOrigin String?
-  region         String?
-  whiskyType     String?
-  wineColor      String?
-  sweetnessLevel String?
-  wineType       String?
-  giftPackaging  String?
-  manufacturer   String?
-  excerpt        String?
-  rawMaterials   String?
-  spirtType      String?
-  taste          String?
-  tasteProduct   String?
-  aromaProduct   String?
-  colorProduct   String?
+  bottleType           String?
+  countryOfOrigin      String?
+  region               String?
+  whiskyType           String?
+  wineColor            String?
+  sweetnessLevel       String?
+  wineType             String?
+  giftPackaging        String?
+  manufacturer         String?
+  excerpt              String?
+  rawMaterials         String?
+  spirtType            String?
+  taste                String?
+  tasteProduct         String?
+  aromaProduct         String?
+  colorProduct         String?
   сombinationsProduct String?
-  description    String?
+  description          String?
 
-  promos        Promo[]
-  orderItems    OrderItem[]
-  cartItems     CartItem[]
-  createdAt     DateTime  @default(now())
-  favoritedBy   Favorite[] 
-  views         ProductView[] @relation("ProductViews")
+  promos      Promo[]
+  orderItems  OrderItem[]
+  cartItems   CartItem[]
+  createdAt   DateTime      @default(now())
+  favoritedBy Favorite[]
+  views       ProductView[] @relation("ProductViews")
 
-  isNew       Boolean   @default(false)     // ← новинка
-  dateAdded   DateTime  @default(now())    // ← когда завели
+  isNew     Boolean             @default(false) // ← новинка
+  dateAdded DateTime            @default(now()) // ← когда завели
+  externals ProductExternalId[]
+  images    ProductImage[]
 
-  @@index([isNew])                          // для выборки «новинки»
+  @@index([isNew]) // для выборки «новинки»
   @@index([canonicalName])
-  externals   ProductExternalId[]
-  images      ProductImage[]
-  searchVector Unsupported("tsvector")? @map("search_vector")
 }
 
 model ProductExternalId {
   id         Int      @id @default(autoincrement())
   productId  Int
   product    Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
-  externalId String   // hex из MobileAgent (источник один, поэтому без поля source)
+  externalId String // hex из MobileAgent (источник один, поэтому без поля source)
   isPrimary  Boolean  @default(false)
   syncedAt   DateTime @default(now())
 
@@ -160,13 +159,13 @@ model ProductImage {
 }
 
 model ProductView {
-  id         Int      @id @default(autoincrement())
-  userId     Int
-  productId  Int
-  viewedAt   DateTime @default(now())
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  productId Int
+  viewedAt  DateTime @default(now())
 
-  user       User     @relation("UserViews",    fields: [userId],    references: [id])
-  product    Product  @relation("ProductViews", fields: [productId], references: [id])
+  user    User    @relation("UserViews", fields: [userId], references: [id])
+  product Product @relation("ProductViews", fields: [productId], references: [id])
 
   @@unique([userId, productId])
   @@index([userId, viewedAt])
@@ -184,60 +183,60 @@ model PriceSyncLog {
 }
 
 model Promo {
-  id         Int      @id @default(autoincrement())
-  product    Product  @relation(fields: [productId], references: [id])
-  productId  Int
-  promoPrice Float
-  comment    String?
-  expiresAt  DateTime
-  applyModifier Boolean @default(true)
+  id            Int      @id @default(autoincrement())
+  product       Product  @relation(fields: [productId], references: [id])
+  productId     Int
+  promoPrice    Float
+  comment       String?
+  expiresAt     DateTime
+  applyModifier Boolean  @default(true)
 }
 
 model Favorite {
-  id        Int     @id @default(autoincrement())
+  id        Int @id @default(autoincrement())
   userId    Int
   productId Int
 
-  user      User    @relation(fields: [userId],    references: [id])
-  product   Product @relation(fields: [productId], references: [id])
+  user    User    @relation(fields: [userId], references: [id])
+  product Product @relation(fields: [productId], references: [id])
 
   createdAt DateTime @default(now())
 
-  @@unique([userId, productId])        // один товар один раз
+  @@unique([userId, productId]) // один товар один раз
   @@index([productId])
 }
 
 model Order {
-  id           Int         @id @default(autoincrement())
-  storeId      Int
-  store        Store       @relation(fields: [storeId], references: [id])
-  userId       Int         // кто оформил (USER или MANAGER)
-  user         User        @relation(fields: [userId], references: [id])
+  id      Int   @id @default(autoincrement())
+  storeId Int
+  store   Store @relation(fields: [storeId], references: [id])
+  userId  Int // кто оформил (USER или MANAGER)
+  user    User  @relation(fields: [userId], references: [id])
 
   total        Float
   status       OrderStatus @default(NEW)
   agentComment String?
 
-  items        OrderItem[]
-  createdAt    DateTime    @default(now())
-  logs         OrderLog[]
+  items     OrderItem[]
+  createdAt DateTime    @default(now())
+  logs      OrderLog[]
 
   // учёт интеграции с MA
   maInvoiceIdHex String?
-  maAppliedAt     DateTime?
-  maError         String?
+  maAppliedAt    DateTime?
+  maError        String?
 
   @@index([status, createdAt])
 }
 
 model OrderItem {
-  id         Int     @id @default(autoincrement())
-  orderId    Int
-  order      Order   @relation(fields: [orderId], references: [id])
-  productId  Int
-  product    Product @relation(fields: [productId], references: [id])
-  price      Float
-  quantity   Int
+  id        Int     @id @default(autoincrement())
+  orderId   Int
+  order     Order   @relation(fields: [orderId], references: [id])
+  productId Int
+  product   Product @relation(fields: [productId], references: [id])
+  price     Float
+  quantity  Int
 }
 
 model Cart {
@@ -262,19 +261,19 @@ model CartItem {
 }
 
 model Notification {
-  id          Int                 @id @default(autoincrement())
+  id          Int                @id @default(autoincrement())
   title       String
-  message     String              @db.Text
-  status      NotificationStatus  @default(DRAFT)
+  message     String             @db.Text
+  status      NotificationStatus @default(DRAFT)
   startsAt    DateTime?
   expiresAt   DateTime?
   createdById Int
-  createdBy   User                @relation("NotificationAuthor", fields: [createdById], references: [id])
-  createdAt   DateTime            @default(now())
-  updatedAt   DateTime            @updatedAt
+  createdBy   User               @relation("NotificationAuthor", fields: [createdById], references: [id])
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
 
-  audiences   NotificationAudience[]
-  reads       NotificationRead[]
+  audiences NotificationAudience[]
+  reads     NotificationRead[]
 
   @@index([status, startsAt])
   @@index([startsAt])
@@ -282,13 +281,13 @@ model Notification {
 }
 
 model NotificationAudience {
-  id             Int                        @id @default(autoincrement())
+  id             Int                      @id @default(autoincrement())
   notificationId Int
-  notification   Notification               @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+  notification   Notification             @relation(fields: [notificationId], references: [id], onDelete: Cascade)
   type           NotificationAudienceType
   role           Role?
   userId         Int?
-  user           User?                      @relation("NotificationAudienceUser", fields: [userId], references: [id], onDelete: Cascade)
+  user           User?                    @relation("NotificationAudienceUser", fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([notificationId, type, role, userId])
   @@index([type])
@@ -297,12 +296,12 @@ model NotificationAudience {
 }
 
 model NotificationRead {
-  id             Int           @id @default(autoincrement())
+  id             Int          @id @default(autoincrement())
   notificationId Int
-  notification   Notification  @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+  notification   Notification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
   userId         Int
-  user           User          @relation("NotificationReadUser", fields: [userId], references: [id], onDelete: Cascade)
-  readAt         DateTime      @default(now())
+  user           User         @relation("NotificationReadUser", fields: [userId], references: [id], onDelete: Cascade)
+  readAt         DateTime     @default(now())
 
   @@unique([notificationId, userId])
   @@index([userId, readAt])
@@ -322,16 +321,16 @@ enum OrderStatus {
 }
 
 model OrderLog {
-  id        Int           @id @default(autoincrement())
+  id        Int            @id @default(autoincrement())
   orderId   Int
-  order     Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  order     Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
   action    OrderLogAction
   source    OrderLogSource
   actorId   Int?
-  actor     User?         @relation("OrderLogActor", fields: [actorId], references: [id])
+  actor     User?          @relation("OrderLogActor", fields: [actorId], references: [id])
   actorRole Role?
   meta      Json?
-  createdAt DateTime      @default(now())
+  createdAt DateTime       @default(now())
 
   @@index([orderId, createdAt])
   @@index([actorId])
