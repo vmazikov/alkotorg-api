@@ -1,6 +1,7 @@
 // src/routes/product.routes.js
 import { Router } from 'express';
 import prisma from '../utils/prisma.js';
+import { Prisma } from '@prisma/client';
 import { authMiddleware } from '../middlewares/auth.js';
 import buildWhere from '../utils/buildWhere.js';   // ← добавили
 import { makeNextCursor, buildWhereAfter } from '../utils/buildNextCursor.js';
