@@ -60,9 +60,9 @@ export function buildWhereAfter(cursor, sort, Prisma) {
     case 'degree_asc': {
       if (cursor.degree == null) {
         return {
-          OR: [
-            { degree: null, id: { gt: cursor.id } },
-            { degree: { not: null } },
+          AND: [
+            { degree: null },
+            { id: { gt: cursor.id } },
           ],
         };
       }
@@ -70,6 +70,7 @@ export function buildWhereAfter(cursor, sort, Prisma) {
         OR: [
           { degree: { gt: cursor.degree } },
           { degree: cursor.degree, id: { gt: cursor.id } },
+          { degree: null },
         ],
       };
     }
@@ -95,9 +96,9 @@ export function buildWhereAfter(cursor, sort, Prisma) {
     case 'volume_asc': {
       if (cursor.volume == null) {
         return {
-          OR: [
-            { volume: null, id: { gt: cursor.id } },
-            { volume: { not: null } },
+          AND: [
+            { volume: null },
+            { id: { gt: cursor.id } },
           ],
         };
       }
@@ -105,6 +106,7 @@ export function buildWhereAfter(cursor, sort, Prisma) {
         OR: [
           { volume: { gt: cursor.volume } },
           { volume: cursor.volume, id: { gt: cursor.id } },
+          { volume: null },
         ],
       };
     }
@@ -149,6 +151,14 @@ export function buildWhereAfter(cursor, sort, Prisma) {
                   { id: { gt: cursor.id } },
                 ],
               },
+              // переходим в блок с null score для той же manualScore
+              {
+                AND: [
+                  { score: { manualScore: cursor.manualScore } },
+                  { score: { score: null } },
+                ],
+              },
+              // затем — manualScore == null
               { score: { manualScore: null } },
               { score: null },
             ],
