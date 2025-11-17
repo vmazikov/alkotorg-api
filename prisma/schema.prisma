@@ -43,6 +43,7 @@ model User {
   notificationReads           NotificationRead[]     @relation("NotificationReadUser")
   notificationAudienceEntries NotificationAudience[] @relation("NotificationAudienceUser")
   orderLogs                   OrderLog[]             @relation("OrderLogActor")
+  autoPickDrafts              AutoPickDraft[]
 }
 
 model Store {
@@ -129,6 +130,7 @@ model Product {
   dateAdded DateTime            @default(now()) // ← когда завели
   externals ProductExternalId[]
   images    ProductImage[]
+  score     ProductScore?
 
   @@index([isNew]) // для выборки «новинки»
   @@index([canonicalName])
@@ -308,6 +310,59 @@ model NotificationRead {
   @@index([notificationId, readAt])
 }
 
+model ProductScore {
+  id           Int      @id @default(autoincrement())
+  productId    Int      @unique
+  score        Float    @default(0)   // автоматический скор
+  manualScore  Float?              // ручной приоритет
+  promoBoost   Float    @default(1)   // множитель для промо
+  noveltyBoost Float    @default(1)   // множитель для новинок/ввода
+  updatedAt    DateTime @updatedAt
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+}
+
+model CategoryRule {
+  id        Int      @id @default(autoincrement())
+  category  String   // product.type
+  volume    Float?   // product.volume (nullable — правило по всей категории)
+  minQty    Int
+  enabled   Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([category])
+  @@index([category, volume])
+}
+
+model AssortmentProfile {
+  id             Int      @id @default(autoincrement())
+  name           String
+  categoryWeights Json     // { [category]: weight }
+  volumeMinQty    Json?
+  isDefault       Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model AutoPickDraft {
+  id        String                @id @default(cuid())
+  userId    Int
+  storeId   Int                   @default(0)
+  params    Json
+  items     Json
+  total     Float
+  status    AutoPickDraftStatus   @default(PENDING)
+  expiresAt DateTime?
+  createdAt DateTime              @default(now())
+  updatedAt DateTime              @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+}
+
 enum Role {
   ADMIN
   AGENT
@@ -318,6 +373,13 @@ enum Role {
 enum OrderStatus {
   NEW
   DONE
+}
+
+enum AutoPickDraftStatus {
+  PENDING
+  APPLIED
+  CANCELLED
+  EXPIRED
 }
 
 model OrderLog {

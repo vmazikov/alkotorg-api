@@ -19,6 +19,7 @@ import favoriteRoutes from './routes/favorite.routes.js';
 import stockRules from './routes/stockRules.routes.js';
 import mobileagent from './routes/mobileagent.routes.js';
 import notificationRoutes from './routes/notification.routes.js';
+import autoPickRoutes from './routes/auto-pick.routes.js';
 
 
 import { authMiddleware } from './middlewares/auth.js';
@@ -91,6 +92,7 @@ app.use('/favorites', authMiddleware, favoriteRoutes);
 app.use('/api/stock-rules', authMiddleware, stockRules);
 app.use('/mobileagent', authMiddleware, mobileagent);
 app.use('/notifications', authMiddleware, notificationRoutes);
+app.use('/auto-pick', authMiddleware, autoPickRoutes);
 
 // ─── Admin routes ────────────────────────────────────────────────────
 app.use('/admin', authMiddleware, adminRoutes);

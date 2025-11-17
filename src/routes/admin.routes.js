@@ -11,6 +11,7 @@ import promoRoutes       from './admin.promo.routes.js'
 import priceExportRouter from './admin.priceExport.routes.js'
 import notificationsRouter from './admin.notification.routes.js'
 import mobileagentOrdersRouter from './admin.mobileagent-orders.routes.js'
+import autoPickRouter from './admin.auto-pick.routes.js'
 
 const router = Router()
 
@@ -78,6 +79,12 @@ router.use(
   '/',
   role(['ADMIN']),
   promoRoutes
+)
+
+router.use(
+  '/auto-pick',
+  role(['ADMIN']),
+  autoPickRouter
 )
 
 
