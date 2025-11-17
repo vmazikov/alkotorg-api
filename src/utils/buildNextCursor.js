@@ -17,6 +17,13 @@ export function makeNextCursor(lastRow, sort) {
     case 'degree_desc':
       return { degree: lastRow.degree ?? null, id: lastRow.id };
 
+    case 'popular':
+      return {
+        manualScore: lastRow.score?.manualScore ?? null,
+        score: lastRow.score?.score ?? null,
+        id: lastRow.id,
+      };
+
     default:                       // без сортировки
       return { id: lastRow.id };
   }
@@ -116,6 +123,95 @@ export function buildWhereAfter(cursor, sort, Prisma) {
           { volume: { lt: cursor.volume } },
           { volume: cursor.volume, id: { gt: cursor.id } },
           { volume: null },
+        ],
+      };
+    }
+
+    case 'popular': {
+      const hasManual = cursor.manualScore != null;
+      const hasScore = cursor.score != null;
+
+      if (hasManual) {
+        if (hasScore) {
+          return {
+            OR: [
+              { score: { manualScore: { lt: cursor.manualScore } } },
+              {
+                AND: [
+                  { score: { manualScore: cursor.manualScore } },
+                  { score: { score: { lt: cursor.score } } },
+                ],
+              },
+              {
+                AND: [
+                  { score: { manualScore: cursor.manualScore } },
+                  { score: { score: cursor.score } },
+                  { id: { gt: cursor.id } },
+                ],
+              },
+              { score: { manualScore: null } },
+              { score: null },
+            ],
+          };
+        }
+        return {
+          OR: [
+            { score: { manualScore: { lt: cursor.manualScore } } },
+            {
+              AND: [
+                { score: { manualScore: cursor.manualScore } },
+                { score: { score: null } },
+                { id: { gt: cursor.id } },
+              ],
+            },
+            { score: { manualScore: null } },
+            { score: null },
+          ],
+        };
+      }
+
+      if (hasScore) {
+        return {
+          OR: [
+            {
+              AND: [
+                { score: { manualScore: null } },
+                { score: { score: { lt: cursor.score } } },
+              ],
+            },
+            {
+              AND: [
+                { score: { manualScore: null } },
+                { score: { score: cursor.score } },
+                { id: { gt: cursor.id } },
+              ],
+            },
+            {
+              AND: [
+                { score: { manualScore: null } },
+                { score: { score: null } },
+              ],
+            },
+            { score: null },
+          ],
+        };
+      }
+
+      return {
+        OR: [
+          {
+            AND: [
+              { score: { manualScore: null } },
+              { score: { score: null } },
+              { id: { gt: cursor.id } },
+            ],
+          },
+          {
+            AND: [
+              { score: null },
+              { id: { gt: cursor.id } },
+            ],
+          },
         ],
       };
     }

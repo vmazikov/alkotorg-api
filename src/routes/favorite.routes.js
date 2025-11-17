@@ -122,13 +122,17 @@ router.get('/', async (req, res, next) => {
       sort === 'degree_desc' ? { degree: 'desc' } :
       undefined;
 
+    const orderBy = [
+      ...(sort === 'popular'
+        ? [{ score: { manualScore: 'desc' } }, { score: { score: 'desc' } }]
+        : orderBySpecific ? [orderBySpecific] : []),
+      { id: 'asc' },
+    ];
+
     /* ---------- запрос ---------- */
     const products = await prisma.product.findMany({
       where,
-      orderBy: [
-        ...(orderBySpecific ? [orderBySpecific] : []),
-        { id: 'asc' },
-      ],
+      orderBy,
       take: +limit,
       ...(cursor ? { skip: 1, cursor: { id: +cursor } } : {}),
       include: {

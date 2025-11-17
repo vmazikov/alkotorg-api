@@ -235,6 +235,14 @@ router.get('/', async (req, res, next) => {
           cursorObj.volume =
             cursorObj.volume == null ? null : +cursorObj.volume;
         }
+        if (cursorObj && 'manualScore' in cursorObj) {
+          cursorObj.manualScore =
+            cursorObj.manualScore == null ? null : +cursorObj.manualScore;
+        }
+        if (cursorObj && 'score' in cursorObj) {
+          cursorObj.score =
+            cursorObj.score == null ? null : +cursorObj.score;
+        }
         if (cursorObj?.name)     cursorObj.name     = String(cursorObj.name); // на всяк.
       } catch { 
         cursorObj = null; 
@@ -244,12 +252,17 @@ router.get('/', async (req, res, next) => {
       const products = await prisma.product.findMany({
         where: { ...where, ...afterWhere },
         orderBy: [
-          ...(orderBySpecific ? [orderBySpecific] : []),
+          ...(sort === 'popular'
+            ? [{ score: { manualScore: 'desc' } }, { score: { score: 'desc' } }]
+            : orderBySpecific
+              ? [orderBySpecific]
+              : []),
           { id: 'asc' },
         ],
         take: +limit,
         include: {
           promos: { where: { expiresAt: { gt: new Date() } } },
+          score: { select: { manualScore: true, score: true } },
           images: { orderBy: { order: 'asc' } },
         },
       });
