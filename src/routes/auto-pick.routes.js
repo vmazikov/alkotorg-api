@@ -24,6 +24,11 @@ const getUserPriceFactor = async userId => {
 const DEFAULT_HISTORY_DAYS = 90;
 const DEFAULT_UNSEEN_SHARE = 0.1;
 const BOXING_MODES = new Set(['auto', 'boxes', 'half', 'pieces']);
+const ASSORTMENT_MODES = {
+  0: { unseenShare: 0.1, noveltyBoost: 1, jitter: 0.01 },
+  1: { unseenShare: 0.18, noveltyBoost: 1.25, jitter: 0.03 },
+  2: { unseenShare: 0.3, noveltyBoost: 1.5, jitter: 0.06 },
+};
 
 const applyPrice = (product, factor) => {
   const fix = n => +n.toFixed(2);
@@ -171,6 +176,10 @@ router.post('/generate', async (req, res, next) => {
     const scopeNormalized = ['user', 'store', 'user+store'].includes(String(historyScope))
       ? String(historyScope)
       : 'user';
+    const modeCfg = ASSORTMENT_MODES[mode] || ASSORTMENT_MODES[0];
+    const effectiveUnseenShare = Math.min(0.5, Math.max(unseenRatio, modeCfg.unseenShare));
+    const jitterAmplitude = modeCfg.jitter || 0;
+    const noveltyModeBoost = modeCfg.noveltyBoost || 1;
 
     const factor = await getUserPriceFactor(req.user.id);
     const since = new Date(Date.now() - historyWindowDays * 24 * 60 * 60 * 1000);
@@ -383,20 +392,23 @@ router.post('/generate', async (req, res, next) => {
       const aBoost =
         (aScore?.promoBoost ?? 1) *
         (aScore?.noveltyBoost ?? 1) *
-        (a.isNew ? 1.15 : 1) *
-        (!productHistory.has(a.id) ? (1 + 0.15 * mode) : 1) *
+        (a.isNew ? 1.15 * noveltyModeBoost : 1) *
+        (!productHistory.has(a.id) ? (1 + 0.25 * mode) : 1) *
         promoBoostA;
       const bBoost =
         (bScore?.promoBoost ?? 1) *
         (bScore?.noveltyBoost ?? 1) *
-        (b.isNew ? 1.15 : 1) *
-        (!productHistory.has(b.id) ? (1 + 0.15 * mode) : 1) *
+        (b.isNew ? 1.15 * noveltyModeBoost : 1) *
+        (!productHistory.has(b.id) ? (1 + 0.25 * mode) : 1) *
         promoBoostB;
+
+      const aJitter = jitterAmplitude ? 1 + (Math.random() - 0.5) * jitterAmplitude * 2 : 1;
+      const bJitter = jitterAmplitude ? 1 + (Math.random() - 0.5) * jitterAmplitude * 2 : 1;
 
       const aFinal = (0.7 * aUserFreq + 0.3 * aGlobal) * aBoost;
       const bFinal = (0.7 * bUserFreq + 0.3 * bGlobal) * bBoost;
 
-      return bFinal - aFinal;
+      return (bFinal * bJitter) - (aFinal * aJitter);
     });
 
     const clampAvgQty = qty => Math.min(Math.max(qty, 1), 12);
@@ -419,7 +431,7 @@ router.post('/generate', async (req, res, next) => {
       return Math.max(minQtyNormalized, base);
     };
 
-    const orderedCandidates = mixSeenAndUnseen(candidates, productHistory, unseenRatio);
+    const orderedCandidates = mixSeenAndUnseen(candidates, productHistory, effectiveUnseenShare);
 
     for (const product of orderedCandidates) {
       if (lineLimit && items.length >= lineLimit) break;
