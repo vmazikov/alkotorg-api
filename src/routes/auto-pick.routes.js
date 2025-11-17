@@ -3,6 +3,7 @@ import { Router } from 'express';
 import prisma from '../utils/prisma.js';
 import { authMiddleware } from '../middlewares/auth.js';
 import { buildImageUrl } from '../utils/imageStorage.js';
+import { getStockRules, isAvailableByStockRules } from '../utils/stockRules.js';
 
 const router = Router();
 router.use(authMiddleware);
@@ -19,6 +20,9 @@ const getUserPriceFactor = async userId => {
   });
   return 1 + ((user?.priceModifier ?? 0) / 100);
 };
+
+const HISTORY_LOOKBACK_DAYS = 90;
+const UNSEEN_SHARE = 0.1;
 
 const applyPrice = (product, factor) => {
   const fix = n => +n.toFixed(2);
@@ -79,6 +83,36 @@ const normalizeImage = images => {
   return first ? buildImageUrl(first.fileName) : null;
 };
 
+const mixSeenAndUnseen = (sortedCandidates, productHistory, unseenShare = UNSEEN_SHARE) => {
+  if (unseenShare <= 0) return sortedCandidates;
+
+  const unseen = [];
+  const seen = [];
+  for (const p of sortedCandidates) {
+    (productHistory.has(p.id) ? seen : unseen).push(p);
+  }
+
+  const mixed = [];
+  let debt = unseenShare; // доля невиденных, которую нужно закрывать
+  let ui = 0;
+  let si = 0;
+
+  while (ui < unseen.length || si < seen.length) {
+    if (ui < unseen.length && debt >= 1) {
+      mixed.push(unseen[ui++]);
+      debt -= 1;
+    } else if (si < seen.length) {
+      mixed.push(seen[si++]);
+      debt += unseenShare;
+    } else {
+      mixed.push(...unseen.slice(ui));
+      break;
+    }
+  }
+
+  return mixed;
+};
+
 router.post('/generate', async (req, res, next) => {
   try {
     const {
@@ -87,6 +121,7 @@ router.post('/generate', async (req, res, next) => {
       maxPricePerItem,
       assortmentMode = 0,
       excludeCategories = [],
+      includeCategories = [],
       storeId = 0,
     } = req.body || {};
 
@@ -95,16 +130,18 @@ router.post('/generate', async (req, res, next) => {
     const maxBudget = Number.isFinite(+maxSum) ? +maxSum : null;
     const maxPrice = Number.isFinite(+maxPricePerItem) ? +maxPricePerItem : null;
     const excluded = new Set((excludeCategories || []).map(String));
+    const included = new Set((includeCategories || []).map(String));
 
     const factor = await getUserPriceFactor(req.user.id);
+    const since = new Date(Date.now() - HISTORY_LOOKBACK_DAYS * 24 * 60 * 60 * 1000);
 
-    const [orders, orderItems, rules, profile] = await Promise.all([
+    const [orders, orderItems, rules, profile, stockRules] = await Promise.all([
       prisma.order.findMany({
-        where: { userId: req.user.id },
+        where: { userId: req.user.id, status: 'DONE', createdAt: { gte: since } },
         select: { total: true },
       }),
       prisma.orderItem.findMany({
-        where: { order: { userId: req.user.id } },
+        where: { order: { userId: req.user.id, status: 'DONE', createdAt: { gte: since } } },
         include: {
           order: { select: { createdAt: true } },
           product: { select: { type: true, volume: true } },
@@ -114,6 +151,7 @@ router.post('/generate', async (req, res, next) => {
       prisma.assortmentProfile.findFirst({
         orderBy: [{ isDefault: 'desc' }, { id: 'asc' }],
       }),
+      getStockRules(),
     ]);
 
     const avgOrderTotal =
@@ -156,30 +194,89 @@ router.post('/generate', async (req, res, next) => {
     });
     const scoreByProduct = new Map(productScores.map(s => [s.productId, s]));
 
-    const categoryWeights = buildCategoryWeights(
-      categoryHistory,
-      profile,
-      products.map(p => p.type || 'uncategorized')
-    );
-    const fallbackCategoryWeight =
-      Object.keys(categoryWeights).length > 0
-        ? 1 / Math.max(Object.keys(categoryWeights).length, 1)
-        : 1 / Math.max(products.length, 1);
+    const diagnostics = {
+      filters: {
+        includeCategories: Array.from(included),
+        excludeCategories: Array.from(excluded),
+        maxPrice,
+      },
+      budget: { target: targetTotal, lower: lowerBudget, upper: upperBudget },
+      skipped: {
+        excludedCategory: 0,
+        notIncludedCategory: 0,
+        maxPrice: 0,
+        stockRule: 0,
+        zeroPrice: 0,
+      },
+    };
 
     const items = [];
     const spentByCategory = new Map();
     let total = 0;
-
+    
     const seen = new Set();
     const sortedProducts = [...products]
       .map(p => {
-        const { price } = applyPrice(p, factor);
-        return { ...p, price };
+        const { price, promoId, basePrice } = applyPrice(p, factor);
+        return { ...p, price, promoId, appliedBasePrice: basePrice };
       })
-      .filter(p => (maxPrice ? p.price <= maxPrice : true))
       .sort((a, b) => b.price - a.price); // базовая сортировка для стабильности
 
-    sortedProducts.sort((a, b) => {
+    const candidates = [];
+
+    for (const product of sortedProducts) {
+      const category = product.type || 'uncategorized';
+
+      if (included.size && !included.has(category)) {
+        diagnostics.skipped.notIncludedCategory += 1;
+        continue;
+      }
+      if (excluded.has(category)) {
+        diagnostics.skipped.excludedCategory += 1;
+        continue;
+      }
+
+      if (maxPrice && product.price > maxPrice) {
+        diagnostics.skipped.maxPrice += 1;
+        continue;
+      }
+
+      if (!product.price || product.price <= 0) {
+        diagnostics.skipped.zeroPrice += 1;
+        continue;
+      }
+
+      const available = isAvailableByStockRules(
+        { basePrice: product.basePrice, stock: product.stock },
+        stockRules,
+      );
+      if (!available) {
+        diagnostics.skipped.stockRule += 1;
+        continue;
+      }
+
+      candidates.push(product);
+    }
+
+    const minCandidatePrice = candidates.reduce(
+      (min, p) => Number.isFinite(p.price) ? Math.min(min, p.price) : min,
+      Infinity,
+    );
+    diagnostics.budget.minCandidatePrice = Number.isFinite(minCandidatePrice) ? minCandidatePrice : null;
+    diagnostics.budget.tooLowForCheapest =
+      maxBudget != null && Number.isFinite(minCandidatePrice) && maxBudget < minCandidatePrice;
+
+    const categoryWeights = buildCategoryWeights(
+      categoryHistory,
+      profile,
+      (candidates.length ? candidates : products).map(p => p.type || 'uncategorized')
+    );
+    const fallbackCategoryWeight =
+      Object.keys(categoryWeights).length > 0
+        ? 1 / Math.max(Object.keys(categoryWeights).length, 1)
+        : 1 / Math.max((candidates.length ? candidates : products).length, 1);
+
+    candidates.sort((a, b) => {
       const aScore = scoreByProduct.get(a.id);
       const bScore = scoreByProduct.get(b.id);
 
@@ -206,7 +303,9 @@ router.post('/generate', async (req, res, next) => {
       return bFinal - aFinal;
     });
 
-    for (const product of sortedProducts) {
+    const orderedCandidates = mixSeenAndUnseen(candidates, productHistory, UNSEEN_SHARE);
+
+    for (const product of orderedCandidates) {
       if (total >= upperBudget && total >= lowerBudget) break;
       if (seen.has(product.id)) continue;
       seen.add(product.id);
@@ -217,7 +316,7 @@ router.post('/generate', async (req, res, next) => {
       const alreadySpent = spentByCategory.get(category) || 0;
       const remainingForCategory = Math.max(targetForCategory - alreadySpent, 0);
 
-      const { price } = applyPrice(product, factor);
+      const price = product.price;
       if (price <= 0) continue;
 
       const history = productHistory.get(product.id);
@@ -259,11 +358,96 @@ router.post('/generate', async (req, res, next) => {
         boxSize: product.quantityInBox || null,
         stock: product.stock,
         img: normalizeImage(product.images) || product.img || null,
+        promoId: product.promos?.[0]?.id ?? null,
       });
+    }
+
+    // вторая попытка — добить нижний бюджет, переиспользуя уже выбранные товары и самые дешёвые
+    if (total < lowerBudget) {
+      const productById = new Map(orderedCandidates.map(p => [p.id, p]));
+      const topUpList = [
+        ...items
+          .map(i => productById.get(i.productId))
+          .filter(Boolean),
+        ...orderedCandidates.filter(p => !seen.has(p.id)),
+      ].sort((a, b) => a.price - b.price);
+
+      for (const product of topUpList) {
+        if (total >= lowerBudget) break;
+
+        const category = product.type || 'uncategorized';
+        const categoryWeight = categoryWeights[category] ?? fallbackCategoryWeight;
+        const targetForCategory = categoryWeight ? targetTotal * categoryWeight : targetTotal;
+        const alreadySpent = spentByCategory.get(category) || 0;
+        const remainingForCategory = Math.max(targetForCategory - alreadySpent, 0);
+
+        const price = product.price;
+        if (price <= 0) continue;
+
+        const rule = findCategoryRule(rules, category, product.volume);
+        const minRuleQty = rule?.minQty || 0;
+
+        const needToReachLower = Math.max(lowerBudget - total, 0);
+        const desiredByBudget = needToReachLower > 0
+          ? Math.max(1, Math.ceil(needToReachLower / price))
+          : 1;
+        const desiredByCategory = remainingForCategory > 0
+          ? Math.max(1, Math.floor(remainingForCategory / price))
+          : 1;
+
+        const existingIndex = items.findIndex(i => i.productId === product.id);
+        const existingItem = existingIndex >= 0 ? items[existingIndex] : null;
+        const currentQty = existingItem?.qty || 0;
+
+        let targetQty = Math.max(
+          currentQty + desiredByBudget,
+          currentQty + desiredByCategory,
+          minRuleQty,
+          currentQty + 1,
+        );
+
+        targetQty = adjustBoxing(targetQty, product.quantityInBox, product.stock);
+        const additional = targetQty - currentQty;
+        if (!additional || additional <= 0) continue;
+
+        const lineTotal = +(price * additional).toFixed(2);
+        if (lineTotal <= 0) continue;
+        if (maxBudget && total + lineTotal > maxBudget * 1.05) continue;
+
+        total = +(total + lineTotal).toFixed(2);
+        spentByCategory.set(category, (spentByCategory.get(category) || 0) + lineTotal);
+
+        if (existingItem) {
+          existingItem.qty += additional;
+          existingItem.total = +(existingItem.total + lineTotal).toFixed(2);
+        } else {
+          items.push({
+            productId: product.id,
+            qty: targetQty,
+            price,
+            total: lineTotal,
+            name: product.name,
+            category,
+            volume: product.volume,
+            boxSize: product.quantityInBox || null,
+            stock: product.stock,
+            img: normalizeImage(product.images) || product.img || null,
+            promoId: product.promos?.[0]?.id ?? null,
+          });
+          seen.add(product.id);
+        }
+      }
     }
 
     if (!items.length) {
       return res.status(400).json({ error: 'Не удалось подобрать товары под заданные параметры' });
+    }
+
+    if (total < lowerBudget) {
+      return res.status(400).json({
+        error: 'Не удалось набрать минимальный бюджет с учётом ограничений',
+        diagnostics: { ...diagnostics, total, items: items.length },
+      });
     }
 
     const draft = await prisma.autoPickDraft.create({
@@ -276,6 +460,7 @@ router.post('/generate', async (req, res, next) => {
           maxPricePerItem: maxPrice,
           assortmentMode: mode,
           excludeCategories: Array.from(excluded),
+          includeCategories: Array.from(included),
           factor,
         },
         items,
@@ -284,7 +469,10 @@ router.post('/generate', async (req, res, next) => {
       },
     });
 
-    res.json({ draftId: draft.id, total, items });
+    diagnostics.budget.final = total;
+    diagnostics.items = items.length;
+
+    res.json({ draftId: draft.id, total, items, diagnostics });
   } catch (err) {
     next(err);
   }
@@ -316,6 +504,7 @@ const ensureCart = async (userId, storeId = 0) => {
 router.post('/apply/:draftId', async (req, res, next) => {
   try {
     const { storeId = 0 } = req.body || {};
+    const stockRules = await getStockRules();
     const draft = await prisma.autoPickDraft.findUnique({
       where: { id: req.params.draftId },
     });
@@ -349,6 +538,9 @@ router.post('/apply/:draftId', async (req, res, next) => {
     for (const item of parsedItems) {
       const product = byId.get(item.productId);
       if (!product) continue;
+      if (!isAvailableByStockRules({ basePrice: product.basePrice, stock: product.stock }, stockRules)) {
+        continue;
+      }
       const qty = Math.min(product.stock, item.qty || 0);
       if (!qty) continue;
 
