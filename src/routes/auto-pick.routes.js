@@ -143,7 +143,7 @@ router.post('/generate', async (req, res, next) => {
       prisma.orderItem.findMany({
         where: { order: { userId: req.user.id, status: 'DONE', createdAt: { gte: since } } },
         include: {
-          order: { select: { createdAt: true } },
+          order: { select: { id: true, createdAt: true } },
           product: { select: { type: true, volume: true } },
         },
       }),
@@ -165,16 +165,25 @@ router.post('/generate', async (req, res, next) => {
     const upperBudget = maxBudget ?? targetTotal * 1.05;
     const lowerBudget = minBudget || targetTotal * 0.8;
 
-    const productHistory = new Map(); // productId -> { qty, orders }
+    const productHistory = new Map(); // productId -> { qty, orders: Set }
     const categoryHistory = new Map(); // category -> qty
+    const categoryVolumeHistory = new Map(); // `${category}|${volume??'any'}` -> { qty, orders: Set }
 
     for (const item of orderItems) {
       const key = item.productId;
-      const prev = productHistory.get(key) || { qty: 0, orders: 0 };
-      productHistory.set(key, { qty: prev.qty + item.quantity, orders: prev.orders + 1 });
+      const prev = productHistory.get(key) || { qty: 0, orders: new Set() };
+      prev.qty += item.quantity;
+      if (item.order?.id != null) prev.orders.add(item.order.id);
+      productHistory.set(key, prev);
 
       const cat = item.product?.type || 'uncategorized';
       categoryHistory.set(cat, (categoryHistory.get(cat) || 0) + item.quantity);
+
+      const catVolKey = `${cat}|${item.product?.volume ?? 'any'}`;
+      const catVolPrev = categoryVolumeHistory.get(catVolKey) || { qty: 0, orders: new Set() };
+      catVolPrev.qty += item.quantity;
+      if (item.order?.id != null) catVolPrev.orders.add(item.order.id);
+      categoryVolumeHistory.set(catVolKey, catVolPrev);
     }
 
     const products = await prisma.product.findMany({
@@ -303,6 +312,23 @@ router.post('/generate', async (req, res, next) => {
       return bFinal - aFinal;
     });
 
+    const clampAvgQty = qty => Math.min(Math.max(qty, 1), 12);
+    const getAvgQty = product => {
+      const category = product.type || 'uncategorized';
+      const byProduct = productHistory.get(product.id);
+      const byProductAvg =
+        byProduct?.orders?.size
+          ? clampAvgQty(Math.round(byProduct.qty / byProduct.orders.size))
+          : null;
+      const catVolKey = `${category}|${product.volume ?? 'any'}`;
+      const byCatVol = categoryVolumeHistory.get(catVolKey);
+      const byCatVolAvg =
+        byCatVol?.orders?.size
+          ? clampAvgQty(Math.round(byCatVol.qty / byCatVol.orders.size))
+          : null;
+      return byProductAvg || byCatVolAvg || 1;
+    };
+
     const orderedCandidates = mixSeenAndUnseen(candidates, productHistory, UNSEEN_SHARE);
 
     for (const product of orderedCandidates) {
@@ -319,8 +345,7 @@ router.post('/generate', async (req, res, next) => {
       const price = product.price;
       if (price <= 0) continue;
 
-      const history = productHistory.get(product.id);
-      const avgQty = history ? Math.max(1, Math.round(history.qty / history.orders)) : 1;
+      const avgQty = getAvgQty(product);
 
       const rule = findCategoryRule(rules, category, product.volume);
       const minRuleQty = rule?.minQty || 0;
@@ -394,6 +419,7 @@ router.post('/generate', async (req, res, next) => {
         const desiredByCategory = remainingForCategory > 0
           ? Math.max(1, Math.floor(remainingForCategory / price))
           : 1;
+        const avgQty = getAvgQty(product);
 
         const existingIndex = items.findIndex(i => i.productId === product.id);
         const existingItem = existingIndex >= 0 ? items[existingIndex] : null;
@@ -403,7 +429,7 @@ router.post('/generate', async (req, res, next) => {
           currentQty + desiredByBudget,
           currentQty + desiredByCategory,
           minRuleQty,
-          currentQty + 1,
+          currentQty + avgQty,
         );
 
         targetQty = adjustBoxing(targetQty, product.quantityInBox, product.stock);
