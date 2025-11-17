@@ -21,8 +21,9 @@ const getUserPriceFactor = async userId => {
   return 1 + ((user?.priceModifier ?? 0) / 100);
 };
 
-const HISTORY_LOOKBACK_DAYS = 90;
-const UNSEEN_SHARE = 0.1;
+const DEFAULT_HISTORY_DAYS = 90;
+const DEFAULT_UNSEEN_SHARE = 0.1;
+const BOXING_MODES = new Set(['auto', 'boxes', 'half', 'pieces']);
 
 const applyPrice = (product, factor) => {
   const fix = n => +n.toFixed(2);
@@ -34,9 +35,26 @@ const applyPrice = (product, factor) => {
   return { price, basePrice, promoId: activePromo?.id ?? null };
 };
 
-const adjustBoxing = (qty, boxSize, stock) => {
+const adjustBoxing = (qty, boxSize, stock, mode = 'auto') => {
   if (!Number.isFinite(qty) || qty <= 0) return 0;
   if (!boxSize || boxSize <= 1) return Math.max(0, Math.min(qty, stock ?? qty));
+
+  if (mode === 'boxes') {
+    const planned = Math.max(boxSize, Math.ceil(qty / boxSize) * boxSize);
+    return Math.max(0, Math.min(planned, stock ?? planned));
+  }
+
+  if (mode === 'half') {
+    const halfBox = Math.max(1, Math.round(boxSize / 2));
+    const planned = qty < boxSize
+      ? Math.max(halfBox, Math.round(qty / halfBox) * halfBox)
+      : Math.max(boxSize, Math.round(qty / boxSize) * boxSize);
+    return Math.max(0, Math.min(planned, stock ?? planned));
+  }
+
+  if (mode === 'pieces') {
+    return Math.max(0, Math.min(qty, stock ?? qty));
+  }
 
   let planned = qty;
 
@@ -83,7 +101,9 @@ const normalizeImage = images => {
   return first ? buildImageUrl(first.fileName) : null;
 };
 
-const mixSeenAndUnseen = (sortedCandidates, productHistory, unseenShare = UNSEEN_SHARE) => {
+const normalizeQty = qty => Math.max(1, Math.round(qty));
+
+const mixSeenAndUnseen = (sortedCandidates, productHistory, unseenShare = DEFAULT_UNSEEN_SHARE) => {
   if (unseenShare <= 0) return sortedCandidates;
 
   const unseen = [];
@@ -123,6 +143,14 @@ router.post('/generate', async (req, res, next) => {
       excludeCategories = [],
       includeCategories = [],
       storeId = 0,
+      historyDays = DEFAULT_HISTORY_DAYS,
+      unseenShare = DEFAULT_UNSEEN_SHARE,
+      maxLines = null,
+      boxingMode = 'auto',
+      preferPromos = false,
+      historyScope = 'user', // user | store | user+store
+      minQtyPerSku = 1,
+      maxCategoryShare = null, // 0..1 доля бюджета
     } = req.body || {};
 
     const mode = clampNumber(assortmentMode, 0);
@@ -131,17 +159,38 @@ router.post('/generate', async (req, res, next) => {
     const maxPrice = Number.isFinite(+maxPricePerItem) ? +maxPricePerItem : null;
     const excluded = new Set((excludeCategories || []).map(String));
     const included = new Set((includeCategories || []).map(String));
+    const lineLimit = Number.isFinite(+maxLines) && +maxLines > 0 ? +maxLines : null;
+    const historyWindowDays = Number.isFinite(+historyDays) && +historyDays > 0 ? +historyDays : DEFAULT_HISTORY_DAYS;
+    const unseenRatio = Number.isFinite(+unseenShare) && +unseenShare >= 0 ? +unseenShare : DEFAULT_UNSEEN_SHARE;
+    const boxingModeNormalized = BOXING_MODES.has(String(boxingMode)) ? String(boxingMode) : 'auto';
+    const minQtyNormalized = Math.max(1, Math.floor(+minQtyPerSku || 1));
+    const categoryShareCap = Number.isFinite(+maxCategoryShare) && +maxCategoryShare > 0
+      ? Math.min(Math.max(+maxCategoryShare, 0), 1)
+      : null;
+
+    const scopeNormalized = ['user', 'store', 'user+store'].includes(String(historyScope))
+      ? String(historyScope)
+      : 'user';
 
     const factor = await getUserPriceFactor(req.user.id);
-    const since = new Date(Date.now() - HISTORY_LOOKBACK_DAYS * 24 * 60 * 60 * 1000);
+    const since = new Date(Date.now() - historyWindowDays * 24 * 60 * 60 * 1000);
+
+    const storeFilter = +storeId || 0;
+    const orderWhereBase = { status: 'DONE', createdAt: { gte: since } };
+    let historyWhere = { ...orderWhereBase, userId: req.user.id };
+    if (scopeNormalized === 'store' && storeFilter) {
+      historyWhere = { ...orderWhereBase, storeId: storeFilter };
+    } else if (scopeNormalized === 'user+store' && storeFilter) {
+      historyWhere = { ...orderWhereBase, OR: [{ userId: req.user.id }, { storeId: storeFilter }] };
+    }
 
     const [orders, orderItems, rules, profile, stockRules] = await Promise.all([
       prisma.order.findMany({
-        where: { userId: req.user.id, status: 'DONE', createdAt: { gte: since } },
+        where: historyWhere,
         select: { total: true },
       }),
       prisma.orderItem.findMany({
-        where: { order: { userId: req.user.id, status: 'DONE', createdAt: { gte: since } } },
+        where: { order: historyWhere },
         include: {
           order: { select: { id: true, createdAt: true } },
           product: { select: { type: true, volume: true } },
@@ -168,6 +217,7 @@ router.post('/generate', async (req, res, next) => {
     const productHistory = new Map(); // productId -> { qty, orders: Set }
     const categoryHistory = new Map(); // category -> qty
     const categoryVolumeHistory = new Map(); // `${category}|${volume??'any'}` -> { qty, orders: Set }
+    const orderCatVolStats = new Map(); // orderId -> Map(catVol -> { variants, qty, products:Set })
 
     for (const item of orderItems) {
       const key = item.productId;
@@ -184,6 +234,36 @@ router.post('/generate', async (req, res, next) => {
       catVolPrev.qty += item.quantity;
       if (item.order?.id != null) catVolPrev.orders.add(item.order.id);
       categoryVolumeHistory.set(catVolKey, catVolPrev);
+
+      if (item.order?.id != null) {
+        const perOrder = orderCatVolStats.get(item.order.id) || new Map();
+        const catVolEntry = perOrder.get(catVolKey) || { variants: 0, qty: 0, products: new Set() };
+        if (!catVolEntry.products.has(item.productId)) {
+          catVolEntry.products.add(item.productId);
+          catVolEntry.variants += 1;
+        }
+        catVolEntry.qty += item.quantity;
+        perOrder.set(catVolKey, catVolEntry);
+        orderCatVolStats.set(item.order.id, perOrder);
+      }
+    }
+
+    const templateByCatVol = new Map(); // cat|vol -> { variantsPerOrder, qtyPerVariant }
+    const catVolOrderTotals = new Map(); // cat|vol -> countOrders
+    for (const [, perOrder] of orderCatVolStats) {
+      for (const [catVolKey, info] of perOrder.entries()) {
+        catVolOrderTotals.set(catVolKey, (catVolOrderTotals.get(catVolKey) || 0) + 1);
+        const tpl = templateByCatVol.get(catVolKey) || { variants: 0, qty: 0 };
+        tpl.variants += info.variants;
+        tpl.qty += info.qty;
+        templateByCatVol.set(catVolKey, tpl);
+      }
+    }
+    for (const [catVolKey, tpl] of templateByCatVol.entries()) {
+      const orderCount = catVolOrderTotals.get(catVolKey) || 1;
+      const variantsPerOrder = Math.max(1, Math.round(tpl.variants / orderCount));
+      const qtyPerVariant = Math.max(1, Math.round(tpl.qty / Math.max(tpl.variants, 1)));
+      templateByCatVol.set(catVolKey, { variantsPerOrder, qtyPerVariant });
     }
 
     const products = await prisma.product.findMany({
@@ -222,7 +302,8 @@ router.post('/generate', async (req, res, next) => {
     const items = [];
     const spentByCategory = new Map();
     let total = 0;
-    
+    const pickedVariants = new Map(); // cat|vol -> count of unique SKUs picked
+
     const seen = new Set();
     const sortedProducts = [...products]
       .map(p => {
@@ -289,25 +370,31 @@ router.post('/generate', async (req, res, next) => {
       const aScore = scoreByProduct.get(a.id);
       const bScore = scoreByProduct.get(b.id);
 
-      const aUser = productHistory.get(a.id)?.qty || 0;
-      const bUser = productHistory.get(b.id)?.qty || 0;
+      const ordersCount = Math.max(orders.length, 1);
+      const aUserFreq = (productHistory.get(a.id)?.orders?.size || 0) / ordersCount;
+      const bUserFreq = (productHistory.get(b.id)?.orders?.size || 0) / ordersCount;
 
       const aGlobal = (aScore?.manualScore ?? aScore?.score ?? 0);
       const bGlobal = (bScore?.manualScore ?? bScore?.score ?? 0);
+
+      const promoBoostA = preferPromos && a.promos?.length ? 1.25 : 1;
+      const promoBoostB = preferPromos && b.promos?.length ? 1.25 : 1;
 
       const aBoost =
         (aScore?.promoBoost ?? 1) *
         (aScore?.noveltyBoost ?? 1) *
         (a.isNew ? 1.15 : 1) *
-        (!productHistory.has(a.id) ? (1 + 0.15 * mode) : 1);
+        (!productHistory.has(a.id) ? (1 + 0.15 * mode) : 1) *
+        promoBoostA;
       const bBoost =
         (bScore?.promoBoost ?? 1) *
         (bScore?.noveltyBoost ?? 1) *
         (b.isNew ? 1.15 : 1) *
-        (!productHistory.has(b.id) ? (1 + 0.15 * mode) : 1);
+        (!productHistory.has(b.id) ? (1 + 0.15 * mode) : 1) *
+        promoBoostB;
 
-      const aFinal = (0.6 * aUser + 0.4 * aGlobal) * aBoost;
-      const bFinal = (0.6 * bUser + 0.4 * bGlobal) * bBoost;
+      const aFinal = (0.7 * aUserFreq + 0.3 * aGlobal) * aBoost;
+      const bFinal = (0.7 * bUserFreq + 0.3 * bGlobal) * bBoost;
 
       return bFinal - aFinal;
     });
@@ -326,12 +413,16 @@ router.post('/generate', async (req, res, next) => {
         byCatVol?.orders?.size
           ? clampAvgQty(Math.round(byCatVol.qty / byCatVol.orders.size))
           : null;
-      return byProductAvg || byCatVolAvg || 1;
+      const template = templateByCatVol.get(catVolKey);
+      const templateQty = template?.qtyPerVariant ? clampAvgQty(template.qtyPerVariant) : null;
+      const base = templateQty || byProductAvg || byCatVolAvg || 1;
+      return Math.max(minQtyNormalized, base);
     };
 
-    const orderedCandidates = mixSeenAndUnseen(candidates, productHistory, UNSEEN_SHARE);
+    const orderedCandidates = mixSeenAndUnseen(candidates, productHistory, unseenRatio);
 
     for (const product of orderedCandidates) {
+      if (lineLimit && items.length >= lineLimit) break;
       if (total >= upperBudget && total >= lowerBudget) break;
       if (seen.has(product.id)) continue;
       seen.add(product.id);
@@ -339,8 +430,11 @@ router.post('/generate', async (req, res, next) => {
       const category = product.type || 'uncategorized';
       const categoryWeight = categoryWeights[category] ?? fallbackCategoryWeight;
       const targetForCategory = categoryWeight ? targetTotal * categoryWeight : targetTotal;
+      const cappedCategoryTarget = categoryShareCap != null
+        ? Math.min(targetForCategory, categoryShareCap * targetTotal)
+        : targetForCategory;
       const alreadySpent = spentByCategory.get(category) || 0;
-      const remainingForCategory = Math.max(targetForCategory - alreadySpent, 0);
+      const remainingForCategory = Math.max(cappedCategoryTarget - alreadySpent, 0);
 
       const price = product.price;
       if (price <= 0) continue;
@@ -350,11 +444,19 @@ router.post('/generate', async (req, res, next) => {
       const rule = findCategoryRule(rules, category, product.volume);
       const minRuleQty = rule?.minQty || 0;
 
+      const catVolKey = `${category}|${product.volume ?? 'any'}`;
+      const template = templateByCatVol.get(catVolKey);
+      const picked = pickedVariants.get(catVolKey) || 0;
+      const variantsTarget = template?.variantsPerOrder || null;
+
+      const needVariant = variantsTarget && picked < variantsTarget;
+      const variantBoost = needVariant ? 1.1 : 1;
+
       const desiredByBudget = remainingForCategory > 0
         ? Math.max(1, Math.floor(remainingForCategory / price))
         : avgQty;
 
-      let qty = Math.max(desiredByBudget, minRuleQty, avgQty);
+      let qty = Math.max(desiredByBudget, minRuleQty, avgQty * variantBoost);
 
       if (maxBudget) {
         const room = maxBudget - total;
@@ -362,7 +464,8 @@ router.post('/generate', async (req, res, next) => {
         qty = Math.min(qty, maxAffordable);
       }
 
-      qty = adjustBoxing(qty, product.quantityInBox, product.stock);
+      qty = normalizeQty(qty);
+      qty = normalizeQty(adjustBoxing(qty, product.quantityInBox, product.stock, boxingModeNormalized));
       if (!qty || qty <= 0) continue;
 
       const lineTotal = +(price * qty).toFixed(2);
@@ -385,6 +488,7 @@ router.post('/generate', async (req, res, next) => {
         img: normalizeImage(product.images) || product.img || null,
         promoId: product.promos?.[0]?.id ?? null,
       });
+      pickedVariants.set(catVolKey, (pickedVariants.get(catVolKey) || 0) + 1);
     }
 
     // вторая попытка — добить нижний бюджет, переиспользуя уже выбранные товары и самые дешёвые
@@ -398,13 +502,17 @@ router.post('/generate', async (req, res, next) => {
       ].sort((a, b) => a.price - b.price);
 
       for (const product of topUpList) {
+        if (lineLimit && items.length >= lineLimit) break;
         if (total >= lowerBudget) break;
 
         const category = product.type || 'uncategorized';
         const categoryWeight = categoryWeights[category] ?? fallbackCategoryWeight;
         const targetForCategory = categoryWeight ? targetTotal * categoryWeight : targetTotal;
+        const cappedCategoryTarget = categoryShareCap != null
+          ? Math.min(targetForCategory, categoryShareCap * targetTotal)
+          : targetForCategory;
         const alreadySpent = spentByCategory.get(category) || 0;
-        const remainingForCategory = Math.max(targetForCategory - alreadySpent, 0);
+        const remainingForCategory = Math.max(cappedCategoryTarget - alreadySpent, 0);
 
         const price = product.price;
         if (price <= 0) continue;
@@ -432,7 +540,8 @@ router.post('/generate', async (req, res, next) => {
           currentQty + avgQty,
         );
 
-        targetQty = adjustBoxing(targetQty, product.quantityInBox, product.stock);
+        targetQty = normalizeQty(targetQty);
+        targetQty = normalizeQty(adjustBoxing(targetQty, product.quantityInBox, product.stock, boxingModeNormalized));
         const additional = targetQty - currentQty;
         if (!additional || additional <= 0) continue;
 
@@ -461,6 +570,8 @@ router.post('/generate', async (req, res, next) => {
             promoId: product.promos?.[0]?.id ?? null,
           });
           seen.add(product.id);
+          const catVolKey = `${category}|${product.volume ?? 'any'}`;
+          pickedVariants.set(catVolKey, (pickedVariants.get(catVolKey) || 0) + 1);
         }
       }
     }
@@ -488,6 +599,14 @@ router.post('/generate', async (req, res, next) => {
           excludeCategories: Array.from(excluded),
           includeCategories: Array.from(included),
           factor,
+          historyDays: historyWindowDays,
+          unseenShare: unseenRatio,
+          maxLines: lineLimit,
+          boxingMode: boxingModeNormalized,
+          preferPromos: !!preferPromos,
+          historyScope: scopeNormalized,
+          minQtyPerSku: minQtyNormalized,
+          maxCategoryShare: categoryShareCap,
         },
         items,
         total,
@@ -497,6 +616,20 @@ router.post('/generate', async (req, res, next) => {
 
     diagnostics.budget.final = total;
     diagnostics.items = items.length;
+    diagnostics.params = {
+      historyDays: historyWindowDays,
+      unseenShare: unseenRatio,
+      maxLines: lineLimit,
+      boxingMode: boxingModeNormalized,
+      preferPromos: !!preferPromos,
+      historyScope: scopeNormalized,
+      minQtyPerSku: minQtyNormalized,
+      maxCategoryShare: categoryShareCap,
+    };
+    diagnostics.categorySpend = Object.fromEntries(spentByCategory.entries());
+    diagnostics.categoryShare = total > 0
+      ? Object.fromEntries(Array.from(spentByCategory.entries()).map(([cat, val]) => [cat, +(val / total).toFixed(4)]))
+      : {};
 
     res.json({ draftId: draft.id, total, items, diagnostics });
   } catch (err) {
