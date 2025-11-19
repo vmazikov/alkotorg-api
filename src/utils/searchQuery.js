@@ -79,47 +79,77 @@ export function prepareSearchQuery(raw) {
 
   if (!sanitized) return null;
 
-  const variants = new Set([sanitized]);
   const hasCyrillic = /[а-яё]/i.test(sanitized);
   const hasLatin = /[a-z]/i.test(sanitized);
 
+  const tokensFrom = value =>
+    value
+      .split(TOKEN_SPLIT_RE)
+      .map(sanitizeToken)
+      .filter(Boolean)
+      .filter(token => token.length >= 2);
+
+  const primaryTokens = tokensFrom(sanitized);
+
+  const altVariants = [];
   if (hasLatin && !hasCyrillic) {
-    variants.add(
+    altVariants.push(
       convertLayout(sanitized, enToRuMap)
         .replace(/\s+/g, ' ')
         .trim()
     );
   } else if (hasCyrillic && !hasLatin) {
-    variants.add(
+    altVariants.push(
       convertLayout(sanitized, ruToEnMap)
         .replace(/\s+/g, ' ')
         .trim()
     );
   }
 
-  const tokenSet = new Set();
-  for (const variant of variants) {
-    variant
-      .split(TOKEN_SPLIT_RE)
-      .map(sanitizeToken)
-      .filter(Boolean)
-      .filter(token => token.length >= 2)
-      .forEach(token => tokenSet.add(token));
+  const alternativeTokenLists = altVariants
+    .map(tokensFrom)
+    .filter(list => list.length);
+
+  const tokenSources = [primaryTokens, ...alternativeTokenLists].filter(list => list.length);
+  const maxLength = Math.max(0, ...tokenSources.map(list => list.length));
+  if (!maxLength) return null;
+
+  const canonicalExtras = [];
+  const tokenGroups = [];
+
+  for (let i = 0; i < maxLength && tokenGroups.length < MAX_TOKENS; i++) {
+    const group = new Set();
+    for (const source of tokenSources) {
+      const token = source[i];
+      if (token) group.add(token);
+    }
+    if (!group.size) continue;
+
+    for (const token of Array.from(group)) {
+      const canonical = synonymMap.get(token);
+      if (canonical) {
+        group.add(canonical);
+        canonicalExtras.push(canonical);
+      }
+    }
+
+    tokenGroups.push(Array.from(group));
   }
 
-  const tokens = Array.from(tokenSet).slice(0, MAX_TOKENS);
+  const uniqueTokens = [];
+  const pushUnique = token => {
+    if (!uniqueTokens.includes(token)) uniqueTokens.push(token);
+  };
+  tokenGroups.forEach(group => group.forEach(pushUnique));
 
-  if (!tokens.length) return null;
-
-  const canonicalExtras = tokens
-    .map(token => synonymMap.get(token))
-    .filter(Boolean);
-
-  const searchTokens = Array.from(new Set([...tokens, ...canonicalExtras])).slice(0, MAX_TOKENS);
+  const uniqueCanonicals = Array.from(new Set(canonicalExtras));
+  const tsTokens = uniqueTokens.slice(0, MAX_TOKENS);
 
   return {
     normalized: base,
-    tokens: searchTokens,
-    tsQueryText: searchTokens.join(' '),
+    tokens: uniqueTokens,
+    tokenGroups,
+    synonyms: uniqueCanonicals,
+    tsQueryText: tsTokens.join(' '),
   };
 }

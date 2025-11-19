@@ -53,6 +53,33 @@ function withImageUrls(product) {
   const cover = images[0]?.url ?? (product.img ?? null);
   return { ...product, images, img: cover };
 }
+
+const SEARCHABLE_FIELDS = [
+  'name',
+  'canonicalName',
+  'brand',
+  'type',
+  'countryOfOrigin',
+];
+
+const buildSearchWhere = tokenGroups => {
+  const groups = (tokenGroups ?? []).filter(group => Array.isArray(group) && group.length);
+  if (!groups.length) return { isArchived: false };
+
+  const orForToken = token =>
+    SEARCHABLE_FIELDS.map(field => ({
+      [field]: { contains: token, mode: 'insensitive' },
+    }));
+
+  const andConditions = groups.map(group => ({
+    OR: group.flatMap(orForToken),
+  }));
+
+  return {
+    isArchived: false,
+    AND: andConditions,
+  };
+};
 /* ------------------------------------------------------------------
    GET /products/suggest?query=...
 -------------------------------------------------------------------*/
@@ -64,20 +91,13 @@ router.get('/suggest', async (req, res, next) => {
     const raw = String(query ?? '').trim();
     if (!raw || raw.length < 2) return res.json([]);
 
-    const tokens = prepareSearchQuery(raw)?.tokens ?? [raw.toLowerCase()];
+    const prepared = prepareSearchQuery(raw);
+    const tokenGroups =
+      prepared?.tokenGroups?.length
+        ? prepared.tokenGroups
+        : [[raw.toLowerCase()]];
     const rows = await prisma.product.findMany({
-      where: {
-        isArchived: false,
-        AND: tokens.map(token => ({
-          OR: [
-            { name: { contains: token, mode: 'insensitive' } },
-            { canonicalName: { contains: token, mode: 'insensitive' } },
-            { brand: { contains: token, mode: 'insensitive' } },
-            { type: { contains: token, mode: 'insensitive' } },
-            { countryOfOrigin: { contains: token, mode: 'insensitive' } },
-          ],
-        })),
-      },
+      where: buildSearchWhere(tokenGroups),
       select: { id: true, name: true, type: true, countryOfOrigin: true },
       orderBy: [{ isNew: 'desc' }, { dateAdded: 'desc' }, { name: 'asc' }],
       take: 5,
@@ -103,22 +123,10 @@ router.get('/search', async (req, res, next) => {
     const prepared = prepareSearchQuery(query);
     if (!prepared) return res.json([]);
 
-    const { normalized, tsQueryText, tokens } = prepared;
-
-    const orTokens = tokens.length ? tokens : [normalized];
+    const { normalized, tokenGroups } = prepared;
+    const groups = tokenGroups?.length ? tokenGroups : [[normalized]];
     const products = await prisma.product.findMany({
-      where: {
-        isArchived: false,
-        AND: orTokens.map(token => ({
-          OR: [
-            { name: { contains: token, mode: 'insensitive' } },
-            { canonicalName: { contains: token, mode: 'insensitive' } },
-            { brand: { contains: token, mode: 'insensitive' } },
-            { type: { contains: token, mode: 'insensitive' } },
-            { countryOfOrigin: { contains: token, mode: 'insensitive' } },
-          ],
-        })),
-      },
+      where: buildSearchWhere(groups),
       include: {
         promos:{ where:{ expiresAt:{ gt:new Date() } } },
         images: { orderBy: { order: 'asc' } },

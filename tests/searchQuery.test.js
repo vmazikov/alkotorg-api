@@ -6,10 +6,14 @@ describe('prepareSearchQuery', () => {
     expect(prepareSearchQuery(null)).toBeNull();
   });
 
-  it('normalizes tokens and adds category synonym', () => {
+  it('normalizes tokens and exposes category synonyms separately', () => {
     const result = prepareSearchQuery(' Водка   Царь!!! ');
     expect(result).not.toBeNull();
-    expect(result.tokens).toEqual(expect.arrayContaining(['водка', 'царь', 'vodka']));
+    expect(result.tokens).toEqual(expect.arrayContaining(['водка', 'царь']));
+    expect(result.synonyms).toEqual(expect.arrayContaining(['vodka']));
+    expect(result.tokenGroups).toEqual(
+      expect.arrayContaining([expect.arrayContaining(['водка', 'vodka'])])
+    );
     expect(result.tsQueryText.split(' ')).toEqual(expect.arrayContaining(['водка', 'царь', 'vodka']));
   });
 
@@ -22,7 +26,7 @@ describe('prepareSearchQuery', () => {
   });
 
   it('recovers tokens when user types with wrong keyboard layout', () => {
-    const result = prepareSearchQuery('djlrf wfhq'); // «водка царь» на EN раскладке
+    const result = prepareSearchQuery('djlrf wfhm'); // «водка царь» на EN раскладке
     expect(result.tokens).toEqual(expect.arrayContaining(['водка', 'царь']));
   });
 });
