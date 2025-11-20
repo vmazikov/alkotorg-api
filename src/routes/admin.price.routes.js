@@ -226,15 +226,20 @@ function loadExternalProducts(path) {
   `).all();
   db.close();
 
-  return rows.map(r => ({
-    productId : decryptAesEcb(r.ProductID).toString('hex'),
-    rawName   : typeof r.ProductName === 'string'
-                  ? r.ProductName.trim()
-                  : decryptAesEcb(r.ProductName).toString('utf8').trim(),
-    name      : undefined, // не перетираем ваш «красивый» name из БД
-    stock     : Number(r.VolumeInStock),
-    basePrice : Number(r.BasePrice),
-  }));
+  return rows.map(r => {
+    const sourceName = typeof r.ProductName === 'string'
+      ? r.ProductName.trim()
+      : decryptAesEcb(r.ProductName).toString('utf8').trim();
+
+    return {
+      productId : decryptAesEcb(r.ProductID).toString('hex'),
+      rawName   : sourceName || null,
+      // поле name оставляем только для превью — в БД его не перетираем
+      name      : sourceName || null,
+      stock     : Number(r.VolumeInStock),
+      basePrice : Number(r.BasePrice),
+    };
+  });
 }
 // =====================================================
 
@@ -295,7 +300,7 @@ router.post(
       }
 
       const hex = normId(r.productId);
-      const canon = normalizeName(r.rawName || '');
+      const canon = normalizeName(r.rawName || r.name || '');
 
       // 1) Ищем по алиасу (быстрый идеальный путь)
       let prodIdByAlias = aliasByHex.get(hex) || null;
@@ -365,7 +370,7 @@ router.post(
               data :{
                 stock:r.stock,
                 // обновим «сырое» имя и каноническое, чтобы дальше матчить стабильнее
-                rawName: r.rawName ?? prod.rawName,
+                rawName: r.rawName ?? r.name ?? prod.rawName,
                 canonicalName: canon || prod.canonicalName
               }
             });
@@ -381,7 +386,7 @@ router.post(
         // Не нашли — кандидат на создание
         newCandidates.push({
           productId: r.productId,
-          rawName:   r.rawName,
+          rawName:   r.rawName ?? r.name ?? null,
           stock:     r.stock,
           basePrice: r.basePrice,
           canonicalName: canon
