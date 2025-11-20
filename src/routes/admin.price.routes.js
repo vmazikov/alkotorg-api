@@ -253,46 +253,59 @@ router.post(
 
     const extRows = loadExternalProducts(req.file.path);
 
-  /** helper: нормализуем id → "abcd1234…" или ''  */
-  const normId = id =>
-    (id || '')
-      .toString()
-      .toLowerCase()
-      .replace(/[^0-9a-f]/g, '');
+    /** helper: нормализуем id → "abcd1234…" или ''  */
+    const normId = id =>
+      (id || '')
+        .toString()
+        .toLowerCase()
+        .replace(/[^0-9a-f]/g, '');
 
-  /* --- соберём хэши внешнего прайса: и по id, и по article --- */
-  const extIdSet       = new Set();   // productId
+    const pickRawName = value => {
+      if (value == null) return null;
+      const s = String(value).trim();
+      return s ? s : null;
+    };
 
-  for (const r of extRows) {
-    const id = normId(r.productId);
-    if (id)        extIdSet.add(id);
-  }
+    /* --- соберём хэши внешнего прайса: и по id, и по article --- */
+    const extIdSet = new Set(); // productId
 
-   // берём активные товары и их алиасы
-   const activeProducts = await prisma.product.findMany({
-     where:  { isArchived: false },
-     select: { id: true, name: true, rawName: true, canonicalName: true, stock: true, productId: true }
-   });
-   const aliases = await prisma.productExternalId.findMany({
-     select: { productId: true, externalId: true }
-   });
-   const aliasByHex = new Map(aliases.map(a => [normId(a.externalId), a.productId]));
+    for (const r of extRows) {
+      const id = normId(r.productId);
+      if (id) extIdSet.add(id);
+    }
 
-   // Кандидаты на архив: те активные, у кого НЕТ ни текущего hex, ни какого-либо алиаса в текущем внешнем наборе
-   const toArchive = activeProducts.filter(p => {
-     const curHex = normId(p.productId);
-     const curHexPresent = !!curHex && extIdSet.has(curHex);
-     if (curHexPresent) return false;
-     // если хоть один из алиасов этого товара присутствует — не архивируем
-     for (const h of extIdSet) {
-       const pid = aliasByHex.get(h);
-       if (pid === p.id) return false;
-     }
-     return true;
-   });
+    // берём активные товары и их алиасы
+    const activeProducts = await prisma.product.findMany({
+      where: { isArchived: false },
+      select: { id: true, name: true, rawName: true, canonicalName: true, stock: true, productId: true }
+    });
+    const aliases = await prisma.productExternalId.findMany({
+      select: { productId: true, externalId: true }
+    });
+    const aliasByHex = new Map();
+    for (const alias of aliases) {
+      const key = normId(alias.externalId);
+      if (!key) continue;
+      aliasByHex.set(key, alias.productId);
+    }
+
+    const aliasHits = new Set();
+    for (const [hex, productId] of aliasByHex.entries()) {
+      if (extIdSet.has(hex)) aliasHits.add(productId);
+    }
+
+    // Кандидаты на архив: те активные, у кого НЕТ ни текущего hex, ни какого-либо алиаса в текущем внешнем наборе
+    const toArchiveInitial = activeProducts.filter(p => {
+      const curHex = normId(p.productId);
+      if (curHex && extIdSet.has(curHex)) return false;
+      return !aliasHits.has(p.id);
+    });
 
     let priceChanged = 0, stockChanged = 0, skipped = 0;
-    const toUnarchive = [], newCandidates = [];
+    const toUnarchive = [];
+    const newCandidates = [];
+    const hexConflicts = [];
+    const matchedProductIds = new Set();
 
     for (const r of extRows) {
       if (!r.productId || r.basePrice == null || r.stock == null) {
@@ -300,7 +313,9 @@ router.post(
       }
 
       const hex = normId(r.productId);
-      const canon = normalizeName(r.rawName || r.name || '');
+      const sourceRawName = pickRawName(r.rawName ?? r.name ?? null);
+      const canonRaw = normalizeName(sourceRawName || '');
+      const canon = canonRaw || null;
 
       // 1) Ищем по алиасу (быстрый идеальный путь)
       let prodIdByAlias = aliasByHex.get(hex) || null;
@@ -308,7 +323,7 @@ router.post(
       if (prodIdByAlias) {
         prod = await prisma.product.findUnique({
           where: { id: prodIdByAlias },
-          select:{ id:true, basePrice:true, stock:true, isArchived:true, name:true, productId:true }
+          select:{ id:true, basePrice:true, stock:true, isArchived:true, name:true, productId:true, rawName:true, canonicalName:true }
         });
       }
 
@@ -316,7 +331,7 @@ router.post(
       if (!prod) {
         prod = await prisma.product.findFirst({
           where: { productId: r.productId },
-          select:{ id:true, basePrice:true, stock:true, isArchived:true, name:true, productId:true }
+          select:{ id:true, basePrice:true, stock:true, isArchived:true, name:true, productId:true, rawName:true, canonicalName:true }
         });
       }
 
@@ -324,73 +339,110 @@ router.post(
       if (!prod && canon) {
         prod = await prisma.product.findFirst({
           where: { canonicalName: canon },
-          select:{ id:true, basePrice:true, stock:true, isArchived:true, name:true, productId:true }
+          select:{ id:true, basePrice:true, stock:true, isArchived:true, name:true, productId:true, rawName:true, canonicalName:true }
         });
       }
 
       if (prod) {
+        matchedProductIds.add(prod.id);
         // hex поменялся? перенесём product.productId на новый и добавим алиас (старый тоже останется в алиасах)
-        const needHexMove = normId(prod.productId) !== hex;
-        if (needHexMove && !preview) {
-          // добавим новый алиас на этот же товар (если его нет)
-          const existsAlias = await prisma.productExternalId.findUnique({ where: { externalId: r.productId }});
-          if (!existsAlias) {
-            await prisma.productExternalId.create({
-              data: { productId: prod.id, externalId: r.productId, isPrimary: true }
-            });
-          } else if (existsAlias.productId !== prod.id) {
-            // редкий конфликт: тот же hex привязан к другому товару — не трогаем автоматически
-          }
-          // перенесём «текущий» hex в самом продукте
-          await prisma.product.update({
-            where: { id: prod.id },
-            data: { productId: r.productId }
+        const needHexMove = !!hex && normId(prod.productId) !== hex;
+        const patch = {};
+        const prevStock = prod.stock;
+
+        if (needHexMove) {
+          const existingAlias = await prisma.productExternalId.findUnique({
+            where: { externalId: r.productId },
+            select: { productId: true }
           });
-          // и в in-memory индексе алиасов
-          aliasByHex.set(hex, prod.id);
+          if (existingAlias && existingAlias.productId !== prod.id) {
+            hexConflicts.push({
+              externalId: r.productId,
+              targetProductId: prod.id,
+              conflictingProductId: existingAlias.productId
+            });
+          } else {
+            if (!existingAlias && !preview) {
+              await prisma.productExternalId.create({
+                data: { productId: prod.id, externalId: r.productId, isPrimary: true }
+              });
+            }
+            patch.productId = r.productId;
+            aliasByHex.set(hex, prod.id);
+          }
         }
 
         /* ---- цена ---- */
         if (Math.abs(prod.basePrice - r.basePrice) >= 1) {
           priceChanged++;
-          if (!preview) {
-            await prisma.product.update({
-              where:{ id:prod.id },
-              data :{ basePrice:r.basePrice }
-            });
-          }
+          patch.basePrice = r.basePrice;
         }
         /* ---- остаток ---- */
         if (prod.stock !== r.stock) {
           stockChanged++;
-          const inc = r.stock > prod.stock;
-          if (!preview) {
-            await prisma.product.update({
-              where:{ id:prod.id },
-              data :{
-                stock:r.stock,
-                // обновим «сырое» имя и каноническое, чтобы дальше матчить стабильнее
-                rawName: r.rawName ?? r.name ?? prod.rawName,
-                canonicalName: canon || prod.canonicalName
-              }
-            });
-          }
+          patch.stock = r.stock;
+          const inc = r.stock > prevStock;
           if (prod.isArchived && inc) {
             toUnarchive.push({
               id: prod.id, name: prod.name,
-              oldStock: prod.stock, newStock: r.stock
+              oldStock: prevStock, newStock: r.stock
             });
           }
+        }
+
+        const needRawUpdate = sourceRawName != null && sourceRawName !== prod.rawName;
+        if (needRawUpdate) {
+          patch.rawName = sourceRawName;
+        }
+        if (canon && canon !== prod.canonicalName) {
+          patch.canonicalName = canon;
+        }
+
+        if (Object.keys(patch).length) {
+          if (!preview) {
+            await prisma.product.update({
+              where: { id: prod.id },
+              data: patch
+            });
+          }
+          Object.assign(prod, patch);
         }
       } else {
         // Не нашли — кандидат на создание
         newCandidates.push({
           productId: r.productId,
-          rawName:   r.rawName ?? r.name ?? null,
+          rawName:   sourceRawName,
+          name:      sourceRawName ?? '',
           stock:     r.stock,
           basePrice: r.basePrice,
           canonicalName: canon
         });
+      }
+    }
+
+    const filteredToArchive = toArchiveInitial.filter(p => !matchedProductIds.has(p.id));
+    const canonicalArchiveIndex = new Map();
+    const decorateArchive = product => {
+      const normalized = product.canonicalName || normalizeName(product.rawName || product.name || '');
+      if (normalized) {
+        if (!canonicalArchiveIndex.has(normalized)) canonicalArchiveIndex.set(normalized, []);
+        canonicalArchiveIndex.get(normalized).push({
+          id: product.id,
+          name: product.name,
+          rawName: product.rawName,
+          canonicalName: normalized,
+          productId: product.productId
+        });
+      }
+      return { ...product, normalizedName: normalized || null };
+    };
+    const toArchive = filteredToArchive.map(decorateArchive);
+
+    for (const candidate of newCandidates) {
+      if (!candidate.canonicalName) continue;
+      const matches = canonicalArchiveIndex.get(candidate.canonicalName);
+      if (matches?.length) {
+        candidate.possibleMatches = matches;
       }
     }
 
@@ -400,7 +452,7 @@ router.post(
        toUnarchive, newCandidates,
        toArchive
     };
-    if (preview) payload.toArchive = toArchive;
+    if (hexConflicts.length) payload.hexConflicts = hexConflicts;
     return res.json(payload);
   }
 );
