@@ -3,6 +3,7 @@ import { Router } from 'express';
 import xlsx       from 'xlsx';
 import prisma     from '../utils/prisma.js';
 import { role }   from '../middlewares/auth.js';
+import { buildImageUrl } from '../utils/imageStorage.js';
 
 const router = Router();
 
@@ -27,12 +28,19 @@ router.get(
       // тянем продукты с промо
       const products = await prisma.product.findMany({
         where,
-        include: { promos: true },
+        include: {
+          promos: true,
+          images: { orderBy: { order: 'asc' } },
+        },
         orderBy: { id: 'asc' },
       });
 
       /* ---------- Price sheet ---------- */
-      const priceRows = products.map(p => ({
+      const priceRows = products.map(p => {
+        const cover = p.images?.length
+          ? buildImageUrl(p.images[0].fileName)
+          : (p.img ?? null);
+        return ({
         id:                p.id,
         productId:         p.productId,
         article:           p.article,
@@ -45,7 +53,7 @@ router.get(
         degree:            p.degree,
         quantityInBox:     p.quantityInBox,
         basePrice:         p.basePrice,
-        img:               p.img,
+        img:               cover,
         stock:             p.stock,
         nonModify:         p.nonModify,
         isArchived:        p.isArchived,
@@ -69,7 +77,8 @@ router.get(
         description:       p.description,
         isNew:             p.isNew,
         dateAdded:         p.dateAdded,
-      }));
+      });
+      });
 
       const wb  = xlsx.utils.book_new();
       const ws1 = xlsx.utils.json_to_sheet(priceRows);
