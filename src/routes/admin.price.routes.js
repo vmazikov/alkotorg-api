@@ -1,5 +1,7 @@
 // src/routes/admin/price.routes.js
 import { Router }        from 'express';
+import fs                from 'fs';
+import path              from 'path';
 import multer            from 'multer';
 import Database          from 'better-sqlite3';
 import crypto            from 'crypto';
@@ -9,10 +11,19 @@ import { role }          from '../middlewares/auth.js';
 import { toFloat, toInt, toBool }from '../utils/parse.js';
 import { Buffer } from 'buffer';
 import { normalizeName } from '../utils/strings.js';
+import { IMAGE_DIR, buildImageUrl } from '../utils/imageStorage.js';
 
 const router   = Router();
 const upload   = multer({ dest: 'uploads/' });
 const dbUpload = multer({ dest: 'uploads/', limits: { fileSize: 5 * 1024 * 1024 } }); // 5 МБ
+const fsp = fs.promises;
+
+const IMAGE_MAX_FILE_SIZE = 5 * 1024 * 1024; // 5 МБ
+const ALLOWED_IMAGE_MIME_TYPES = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/webp'
+]);
 
 /* ─────────────── utils для режима full ─────────────── */
 
@@ -54,6 +65,61 @@ function dropUnchanged(patch, current) {
   return out;
 }
 
+function normalizeImageValue(value) {
+  if (value === null || value === undefined) return null;
+  const str = String(value).trim();
+  return str ? str : null;
+}
+
+function isHttpUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+async function downloadImageFromUrl(url) {
+  const parsed = new URL(url);
+  const response = await fetch(parsed.toString(), { redirect: 'follow' });
+  if (!response.ok) {
+    throw new Error(`Не удалось скачать изображение (${response.status})`);
+  }
+
+  const contentType = response.headers.get('content-type')?.split(';')[0]?.trim();
+  if (!contentType || !ALLOWED_IMAGE_MIME_TYPES.has(contentType)) {
+    throw new Error('Недопустимый тип файла. Разрешены JPEG, PNG, WEBP');
+  }
+
+  const contentLength = Number(response.headers.get('content-length') || 0);
+  if (contentLength && contentLength > IMAGE_MAX_FILE_SIZE) {
+    throw new Error('Размер файла превышает 5 МБ');
+  }
+
+  const buffer = Buffer.from(await response.arrayBuffer());
+  if (buffer.length > IMAGE_MAX_FILE_SIZE) {
+    throw new Error('Размер файла превышает 5 МБ');
+  }
+
+  const extFromPath = path.extname(parsed.pathname).toLowerCase();
+  const extension = extFromPath || (contentType === 'image/png'
+    ? '.png'
+    : contentType === 'image/webp'
+      ? '.webp'
+      : '.jpg');
+  const fileName = `${crypto.randomUUID()}${extension}`;
+  await fsp.writeFile(path.join(IMAGE_DIR, fileName), buffer);
+  return buildImageUrl(fileName);
+}
+
+async function resolveImportedImage(value) {
+  const normalized = normalizeImageValue(value);
+  if (!normalized) return null;
+  if (!isHttpUrl(normalized)) return normalized;
+  return await downloadImageFromUrl(normalized);
+}
+
 
 /** 
  * 1) Старый Excel-импорт без изменений 
@@ -89,6 +155,7 @@ router.post(
       const r = cleanRowKeys(raw);     // ← нормализовали ключи
 
       const data = mapRow(r);        // mapRow теперь работает со «чистыми» ключами
+      const hasImgCell = 'img' in r || 'newimg' in r;
       const hasHex = !!data.productId;
       if (!hasHex) { skipped++; continue; }
       const existing = await prisma.product.findFirst({
@@ -100,6 +167,11 @@ router.post(
 
       if (mode === 'full') {
         if (existing) {
+          if (hasImgCell) {
+            data.img = await resolveImportedImage(data.img);
+          } else {
+            data.img = existing.img ?? null;
+          }
           // --- сравниваем ---
           let patch = buildUpdateForFull(data);
           // Если пришёл rawName, но не пришёл name — не трогаем name
@@ -121,6 +193,9 @@ router.post(
           } else {
             skipped++;          }
         } else {                                            // -------- CREATE
+          if (hasImgCell) {
+            data.img = await resolveImportedImage(data.img);
+          }
           if (existing) {
             const needPrice  = !isEqual(existing.basePrice, data.basePrice);
             const needStock  = !isEqual(existing.stock,     data.stock);
@@ -169,12 +244,19 @@ router.post(
         if (data.whiskyType      != null) baseUpdate.whiskyType      = data.whiskyType;
 
         if (existing) {
+          if (hasImgCell && !existing.img) {
+            const resolvedImg = await resolveImportedImage(data.img);
+            if (resolvedImg) baseUpdate.img = resolvedImg;
+          }
           product = await prisma.product.update({
             where: { id: existing.id },
             data: baseUpdate
           });
           updated++;
         } else {
+          if (hasImgCell) {
+            data.img = await resolveImportedImage(data.img);
+          }
           product = await prisma.product.create({
             data: {
               ...data,
